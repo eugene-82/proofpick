@@ -1,5 +1,6 @@
 """Structured product identity models for resolver implementations."""
 
+from enum import Enum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -8,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 NonEmptyString = Annotated[str, Field(min_length=1)]
 Confidence = Annotated[float, Field(ge=0, le=1)]
 Category = Annotated[str, Field(pattern=r"^[a-z0-9_]+$")]
+
+
+class ProductIdentityIssue(str, Enum):
+    ACCESSORY_INPUT = "accessory_input"
+    COMPARISON_INPUT = "comparison_input"
+    AMBIGUOUS_FAMILY = "ambiguous_family"
 
 
 class ProductCandidate(BaseModel):
@@ -38,6 +45,7 @@ class ProductResolution(BaseModel):
     ambiguous: bool
     confidence: Confidence
     candidates: list[ProductCandidate] = Field(default_factory=list)
+    identity_issues: list[ProductIdentityIssue] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_identity(self) -> "ProductResolution":

@@ -20,6 +20,7 @@ from .similarity import cosine_similarity, normalize_vector
 
 
 ASPECT_ALIASES = {
+    "battery_health": "battery",
     "battery_duration": "battery",
     "battery_life": "battery",
     "battery_runtime": "battery",
@@ -39,7 +40,7 @@ class _ClaimRecord:
 
 
 class SemanticClaimClusterer:
-    """Group same-aspect, same-sentiment claims by cosine connectivity."""
+    """Group same-aspect, same-sentiment claims with pairwise coherence."""
 
     def __init__(
         self,
@@ -76,7 +77,7 @@ class SemanticClaimClusterer:
 
         components: list[list[_ClaimRecord]] = []
         for partition_records in partitions.values():
-            components.extend(self._connected_components(partition_records))
+            components.extend(self._complete_link_clusters(partition_records))
         components.sort(key=lambda component: min(record.index for record in component))
 
         clusters = [
@@ -143,35 +144,22 @@ class SemanticClaimClusterer:
         elif len(vector) != self._embedding_dimension:
             raise EmbeddingValidationError("embedding dimensions must match")
 
-    def _connected_components(
+    def _complete_link_clusters(
         self, records: list[_ClaimRecord]
     ) -> list[list[_ClaimRecord]]:
-        adjacency: list[list[int]] = [[] for _ in records]
-        for left in range(len(records)):
-            for right in range(left + 1, len(records)):
-                similarity = cosine_similarity(records[left].vector, records[right].vector)
-                if similarity + 1e-12 >= self._policy.similarity_threshold:
-                    adjacency[left].append(right)
-                    adjacency[right].append(left)
-
-        components: list[list[_ClaimRecord]] = []
-        visited: set[int] = set()
-        for start in range(len(records)):
-            if start in visited:
-                continue
-            stack = [start]
-            visited.add(start)
-            component_indices: list[int] = []
-            while stack:
-                current = stack.pop()
-                component_indices.append(current)
-                for neighbor in reversed(adjacency[current]):
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        stack.append(neighbor)
-            component = [records[index] for index in sorted(component_indices)]
-            components.append(component)
-        return components
+        clusters: list[list[_ClaimRecord]] = []
+        for record in records:
+            for cluster in clusters:
+                if all(
+                    cosine_similarity(record.vector, member.vector) + 1e-12
+                    >= self._policy.similarity_threshold
+                    for member in cluster
+                ):
+                    cluster.append(record)
+                    break
+            else:
+                clusters.append([record])
+        return clusters
 
     def _build_cluster(
         self,
@@ -194,6 +182,20 @@ class SemanticClaimClusterer:
         independence_groups = list(
             dict.fromkeys(source.independence_group_id for source in source_metadata)
         )
+        confirmed_groups = list(
+            dict.fromkeys(
+                source.independence_group_id
+                for source in source_metadata
+                if source.independence_state.value == "confirmed"
+            )
+        )
+        unknown_groups = list(
+            dict.fromkeys(
+                source.independence_group_id
+                for source in source_metadata
+                if source.independence_state.value == "unknown"
+            )
+        )
         domains = list(dict.fromkeys(source.domain for source in source_metadata))
         severities = [record.claim.severity for record in records]
         usage_periods = sorted(
@@ -214,13 +216,21 @@ class SemanticClaimClusterer:
                     claim_id=record.claim_id,
                     claim=record.claim,
                     embedding_key=record.embedding_key,
+                    independence_group_id=source_by_id[
+                        record.claim.source_id
+                    ].independence_group_id,
+                    independence_state=source_by_id[
+                        record.claim.source_id
+                    ].independence_state,
                 )
                 for record in records
             ],
             source_ids=source_ids,
             source_count=len(source_ids),
             independence_group_ids=independence_groups,
-            independent_source_count=len(independence_groups),
+            confirmed_independence_group_ids=confirmed_groups,
+            unknown_independence_group_ids=unknown_groups,
+            independent_source_count=len(confirmed_groups),
             domains=domains,
             domain_count=len(domains),
             average_severity=sum(severities) / len(severities),

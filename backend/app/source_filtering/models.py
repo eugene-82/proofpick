@@ -15,11 +15,20 @@ class SourceType(str, Enum):
     COMMUNITY = "community"
 
 
+class IndependenceState(str, Enum):
+    """Whether independence was established, unresolved, or disproven."""
+
+    CONFIRMED = "confirmed"
+    UNKNOWN = "unknown"
+    DEPENDENT = "dependent"
+
+
 class DropReason(str, Enum):
     """Deterministic reasons why a source was not accepted."""
 
     DUPLICATE_URL = "duplicate_url"
     DUPLICATE_CONTENT = "duplicate_content"
+    NEAR_DUPLICATE_CONTENT = "near_duplicate_content"
     INVALID_URL = "invalid_url"
     EMPTY_CONTENT = "empty_content"
 
@@ -35,6 +44,7 @@ class SourceCandidate(BaseModel):
     raw_content: str | None = None
     published_at: datetime | None = None
     source_type: SourceType | None = None
+    independence_state: IndependenceState = IndependenceState.UNKNOWN
 
     @classmethod
     def from_search_result(cls, result: SearchResult) -> "SourceCandidate":
@@ -48,7 +58,7 @@ class SourceCandidate(BaseModel):
 
 
 class FilteredSource(BaseModel):
-    """Accepted source with provenance and exact-independence metadata."""
+    """Accepted source with provenance and dependency metadata."""
 
     source_key: str = Field(pattern=r"^S\d{3,}$")
     original_url: str
@@ -61,6 +71,7 @@ class FilteredSource(BaseModel):
     source_type: SourceType
     content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     independence_group_id: str = Field(pattern=r"^IG\d{3,}$")
+    independence_state: IndependenceState = IndependenceState.UNKNOWN
 
 
 class DroppedSource(BaseModel):
@@ -71,6 +82,7 @@ class DroppedSource(BaseModel):
     reason: DropReason
     duplicate_of: str | None = Field(default=None, pattern=r"^S\d{3,}$")
     independence_group_id: str | None = Field(default=None, pattern=r"^IG\d{3,}$")
+    independence_state: IndependenceState | None = None
 
 
 class SourceFilterResult(BaseModel):

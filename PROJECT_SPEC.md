@@ -311,6 +311,7 @@ Source independence indicators:
 - copied quote blocks
 
 Repeated copies do not count as independent evidence.
+Unknown independence is not confirmed support. Incremental filtering within one analysis must share an analysis-local identity registry so source/group IDs remain collision-free and duplicates reconcile to a stable representative.
 
 ## 12. Evidence Compression
 Never repeatedly pass full source pages into downstream LLM calls.
@@ -356,6 +357,7 @@ Preferred approach:
 4. compute independent source count and platform diversity in code
 
 Do not use one LLM call per claim.
+Only VERIFIED grounded claims participate downstream. Clusters must enforce internal coherence rather than merging a similarity chain whose endpoints are unrelated.
 
 ## 15. Confidence Engine
 Confidence is deterministic, not an LLM opinion.
@@ -406,7 +408,7 @@ EARLY_ADOPTER when:
 
 SKIP should require meaningful repeated negative evidence, not one dramatic post.
 
-BUY should require adequate evidence quality, not merely high sentiment.
+BUY should require adequate evidence quality and affirmative independent support, not merely the absence of blocking issues. Neutral-only evidence cannot default to BUY, and unresolved severe risks must remain visible and block BUY without automatically forcing SKIP.
 
 BUY_IF when benefits are credible but important caveats depend on user context.
 

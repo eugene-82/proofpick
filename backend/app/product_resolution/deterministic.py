@@ -7,7 +7,16 @@ from pydantic import HttpUrl, TypeAdapter, ValidationError
 
 from .base import ProductResolver
 from .exceptions import ProductInputError
-from .models import ProductCandidate, ProductResolution
+from .models import (
+    ProductCandidate,
+    ProductIdentityIssue,
+    ProductResolution,
+)
+
+
+TRACKING_PARAMETERS = frozenset(
+    {"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "fbclid"}
+)
 
 
 class DeterministicProductResolver(ProductResolver):
@@ -16,6 +25,8 @@ class DeterministicProductResolver(ProductResolver):
     _SEPARATOR_PATTERN = re.compile(r"[-_/]+")
     _URL_ADAPTER = TypeAdapter(HttpUrl)
     _WHITESPACE_PATTERN = re.compile(r"\s+")
+    _COMPARISON_PATTERN = re.compile(r"\b(?:vs|versus|compare|comparison)\b|비교")
+    _ACCESSORY_PATTERN = re.compile(r"\b(?:case|cover|ear\s*tips?|strap)\b|(?:케이스|커버|이어팁)")
     _AIRPODS_GENERATIONS = {
         "1st generation": (
             "airpods pro 1",
@@ -41,13 +52,27 @@ class DeterministicProductResolver(ProductResolver):
         normalized_input = self._normalize_input(product_input)
 
         if self._contains_airpods_pro(normalized_input):
+            if self._ACCESSORY_PATTERN.search(normalized_input):
+                return ProductResolution(
+                    ambiguous=True,
+                    confidence=0,
+                    identity_issues=[ProductIdentityIssue.ACCESSORY_INPUT],
+                )
             return self._resolve_airpods_pro(normalized_input)
-        if "roborock q revo" in normalized_input or "로보락 q revo" in normalized_input:
+        roborock = re.search(
+            r"(?:roborock|로보락)\s+q\s+revo(?:\s+(maxv|pro|plus))?\b",
+            normalized_input,
+        )
+        if roborock:
+            suffix = roborock.group(1)
+            display_suffix = {"maxv": "MaxV", "pro": "Pro", "plus": "Plus"}.get(suffix)
+            product_name = "Q Revo" + (f" {display_suffix}" if display_suffix else "")
             return ProductResolution(
                 brand="Roborock",
-                product_name="Q Revo",
+                product_name=product_name,
+                model=display_suffix,
                 category="robot_vacuum",
-                canonical_name="Roborock Q Revo",
+                canonical_name=f"Roborock {product_name}",
                 ambiguous=False,
                 confidence=0.95,
             )
@@ -70,6 +95,7 @@ class DeterministicProductResolver(ProductResolver):
                 canonical_name="LG gram 16",
                 ambiguous=True,
                 confidence=0.6,
+                identity_issues=[ProductIdentityIssue.AMBIGUOUS_FAMILY],
             )
 
         return ProductResolution(ambiguous=True, confidence=0)
@@ -97,28 +123,51 @@ class DeterministicProductResolver(ProductResolver):
                 )
 
             parts = [parsed.hostname or ""]
+            parts.extend(unquote(segment) for segment in parsed.path.split("/") if segment)
             parts.extend(
-                unquote(segment) for segment in parsed.path.split("/") if segment
+                value
+                for key, value in parse_qsl(parsed.query)
+                if key.casefold() not in TRACKING_PARAMETERS
             )
-            parts.extend(value for _, value in parse_qsl(parsed.query))
             return self._normalize_text(" ".join(parts))
 
         return self._normalize_text(raw_input)
 
     def _resolve_airpods_pro(self, normalized_input: str) -> ProductResolution:
-        for generation, aliases in self._AIRPODS_GENERATIONS.items():
-            if any(alias in normalized_input for alias in aliases):
-                candidate = self._airpods_candidate(generation, confidence=0.95)
-                return ProductResolution(
-                    brand=candidate.brand,
-                    product_name=candidate.product_name,
-                    model=candidate.model,
-                    generation=candidate.generation,
-                    category=candidate.category,
-                    canonical_name=candidate.canonical_name,
-                    ambiguous=False,
-                    confidence=candidate.confidence,
-                )
+        generations = [
+            generation
+            for generation, aliases in self._AIRPODS_GENERATIONS.items()
+            if any(alias in normalized_input for alias in aliases)
+        ]
+        if len(generations) > 1 or self._COMPARISON_PATTERN.search(normalized_input):
+            candidates = [self._airpods_candidate(item, confidence=0.5) for item in generations]
+            if not candidates:
+                candidates = [
+                    self._airpods_candidate(item, confidence=0.34)
+                    for item in self._AIRPODS_GENERATIONS
+                ]
+            return ProductResolution(
+                brand="Apple",
+                product_name="AirPods Pro",
+                category="wireless_earbuds",
+                canonical_name="Apple AirPods Pro",
+                ambiguous=True,
+                confidence=0.4,
+                candidates=candidates,
+                identity_issues=[ProductIdentityIssue.COMPARISON_INPUT],
+            )
+        if generations:
+            candidate = self._airpods_candidate(generations[0], confidence=0.95)
+            return ProductResolution(
+                brand=candidate.brand,
+                product_name=candidate.product_name,
+                model=candidate.model,
+                generation=candidate.generation,
+                category=candidate.category,
+                canonical_name=candidate.canonical_name,
+                ambiguous=False,
+                confidence=candidate.confidence,
+            )
 
         return ProductResolution(
             brand="Apple",
@@ -132,6 +181,7 @@ class DeterministicProductResolver(ProductResolver):
                 self._airpods_candidate("2nd generation", confidence=0.34),
                 self._airpods_candidate("3rd generation", confidence=0.34),
             ],
+            identity_issues=[ProductIdentityIssue.AMBIGUOUS_FAMILY],
         )
 
     @staticmethod
@@ -181,6 +231,7 @@ class DeterministicProductResolver(ProductResolver):
                     confidence=0.33,
                 ),
             ],
+            identity_issues=[ProductIdentityIssue.AMBIGUOUS_FAMILY],
         )
 
     @classmethod

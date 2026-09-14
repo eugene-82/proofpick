@@ -21,6 +21,8 @@ class DecisionReasonCode(str, Enum):
     LONG_TERM_NEGATIVE_ISSUE = "LONG_TERM_NEGATIVE_ISSUE"
     STRONG_POSITIVE_SUPPORT = "STRONG_POSITIVE_SUPPORT"
     CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"
+    UNRESOLVED_SEVERE_RISK = "UNRESOLVED_SEVERE_RISK"
+    NO_AFFIRMATIVE_SUPPORT = "NO_AFFIRMATIVE_SUPPORT"
     NO_BLOCKING_ISSUES = "NO_BLOCKING_ISSUES"
 
 
@@ -32,7 +34,8 @@ class DecisionSignal(DecisionModel):
     severity: float = Field(ge=1, le=5)
     max_severity: int = Field(ge=1, le=5)
     source_count: int = Field(ge=1)
-    independent_source_count: int = Field(ge=1)
+    independent_source_count: int = Field(ge=0)
+    high_severity_independent_support: int = Field(default=0, ge=0)
     domain_count: int = Field(ge=1)
     long_term_evidence: bool
 
@@ -43,6 +46,7 @@ class PurchaseDecisionResult(DecisionModel):
     reasons: list[DecisionReasonCode] = Field(min_length=1)
     blocking_issues: list[DecisionSignal] = Field(default_factory=list)
     conditions: list[DecisionSignal] = Field(default_factory=list)
+    unresolved_risks: list[DecisionSignal] = Field(default_factory=list)
     supporting_signals: list[DecisionSignal] = Field(default_factory=list)
     evidence_sufficient: bool
     should_find_alternatives: bool

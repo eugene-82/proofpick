@@ -1,4 +1,4 @@
-"""Deterministic source filtering and exact deduplication."""
+"""Deterministic source filtering with conservative dependency tracking."""
 
 from .base import SourceFilter
 from .deduplicator import DuplicateMatch, SourceDeduplicator
@@ -7,11 +7,13 @@ from .models import (
     DropReason,
     DroppedSource,
     FilteredSource,
+    IndependenceState,
     SourceCandidate,
     SourceFilterResult,
     SourceType,
 )
 from .normalizer import SourceNormalizer
+from .registry import SourceIdentityRegistry
 from .service import DeterministicSourceFilter
 
 __all__ = [
@@ -20,11 +22,13 @@ __all__ = [
     "DroppedSource",
     "DuplicateMatch",
     "FilteredSource",
+    "IndependenceState",
     "InvalidSourceUrlError",
     "SourceCandidate",
     "SourceDeduplicator",
     "SourceFilter",
     "SourceFilterResult",
+    "SourceIdentityRegistry",
     "SourceNormalizer",
     "SourceType",
 ]

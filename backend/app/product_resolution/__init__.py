@@ -3,11 +3,12 @@
 from .base import ProductResolver
 from .deterministic import DeterministicProductResolver
 from .exceptions import ProductInputError, ProductResolutionError
-from .models import ProductCandidate, ProductResolution
+from .models import ProductCandidate, ProductIdentityIssue, ProductResolution
 
 __all__ = [
     "DeterministicProductResolver",
     "ProductCandidate",
+    "ProductIdentityIssue",
     "ProductInputError",
     "ProductResolution",
     "ProductResolutionError",

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.claim_extraction.models import ExtractedClaim
 from app.models import ClaimSentiment
+from app.source_filtering.models import IndependenceState
 
 
 class ClusteringModel(BaseModel):
@@ -16,6 +17,10 @@ class ClusterMember(ClusteringModel):
     claim_id: str = Field(pattern=r"^C\d{3,}$")
     claim: ExtractedClaim
     embedding_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    independence_group_id: str | None = Field(
+        default=None, pattern=r"^IG\d{3,}$"
+    )
+    independence_state: IndependenceState = IndependenceState.UNKNOWN
 
 
 class ClaimCluster(ClusteringModel):
@@ -29,7 +34,9 @@ class ClaimCluster(ClusteringModel):
     source_ids: list[str] = Field(min_length=1)
     source_count: int = Field(ge=1)
     independence_group_ids: list[str] = Field(min_length=1)
-    independent_source_count: int = Field(ge=1)
+    confirmed_independence_group_ids: list[str] | None = None
+    unknown_independence_group_ids: list[str] | None = None
+    independent_source_count: int = Field(ge=0)
     domains: list[str] = Field(min_length=1)
     domain_count: int = Field(ge=1)
     average_severity: float = Field(ge=1, le=5)

@@ -18,6 +18,7 @@ from app.decision import (
     PurchaseDecisionResult,
 )
 from app.models import PurchaseDecision
+from app.source_filtering import IndependenceState
 
 
 def confidence(
@@ -90,6 +91,8 @@ def cluster(
                 claim_id=f"C{cluster_index * 100 + offset + 1:03d}",
                 claim=claim,
                 embedding_key=sha256(claim.claim.encode()).hexdigest(),
+                independence_group_id=f"IG{source_number:03d}",
+                independence_state=IndependenceState.CONFIRMED,
             )
         )
         source_ids.append(source_id)
@@ -102,6 +105,8 @@ def cluster(
                 claim_id=f"C{cluster_index * 100 + support + duplicate_index + 1:03d}",
                 claim=original.claim,
                 embedding_key=original.embedding_key,
+                independence_group_id=original.independence_group_id,
+                independence_state=IndependenceState.CONFIRMED,
             )
         )
     return ClaimCluster(
@@ -113,6 +118,8 @@ def cluster(
         source_ids=source_ids,
         source_count=support,
         independence_group_ids=group_ids,
+        confirmed_independence_group_ids=group_ids,
+        unknown_independence_group_ids=[],
         independent_source_count=support,
         domains=domains,
         domain_count=support,
@@ -213,9 +220,9 @@ def test_one_severe_member_does_not_make_a_repeated_cluster_skip() -> None:
 
     result = decide([mixed])
 
-    assert result.decision is PurchaseDecision.BUY_IF
-    assert result.conditions[0].severity == 2.0
-    assert result.conditions[0].max_severity == 5
+    assert result.decision is PurchaseDecision.EARLY_ADOPTER
+    assert result.unresolved_risks[0].severity == 2.0
+    assert result.unresolved_risks[0].max_severity == 5
 
 
 def test_repeated_severity_four_independent_issue_returns_skip() -> None:
@@ -272,7 +279,7 @@ def test_weak_conflict_does_not_force_buy_if() -> None:
         cluster(3, 4, sentiment="neutral", aspect="design", source_start=10),
     ]
 
-    assert decide(clusters).decision is PurchaseDecision.BUY
+    assert decide(clusters).decision is PurchaseDecision.EARLY_ADOPTER
 
 
 def test_duplicate_claims_from_one_source_do_not_inflate_decision_support() -> None:
@@ -298,7 +305,7 @@ def test_independent_support_changes_buy_to_buy_if() -> None:
         cluster(2, 4, sentiment="neutral", source_start=10),
     ]
 
-    assert decide(one_source).decision is PurchaseDecision.BUY
+    assert decide(one_source).decision is PurchaseDecision.EARLY_ADOPTER
     assert decide(two_sources).decision is PurchaseDecision.BUY_IF
 
 
@@ -408,8 +415,8 @@ def test_invalid_purchase_decision_value_is_rejected() -> None:
     ("score", "expected"),
     [
         (0.399999, PurchaseDecision.EARLY_ADOPTER),
-        (0.400000, PurchaseDecision.BUY),
-        (0.400001, PurchaseDecision.BUY),
+        (0.400000, PurchaseDecision.EARLY_ADOPTER),
+        (0.400001, PurchaseDecision.EARLY_ADOPTER),
     ],
 )
 def test_confidence_threshold_boundary(score: float, expected: PurchaseDecision) -> None:
@@ -457,8 +464,8 @@ def test_skip_support_threshold_boundary(
     ("independent_sources", "expected"),
     [
         (2, PurchaseDecision.EARLY_ADOPTER),
-        (3, PurchaseDecision.BUY),
-        (4, PurchaseDecision.BUY),
+        (3, PurchaseDecision.EARLY_ADOPTER),
+        (4, PurchaseDecision.EARLY_ADOPTER),
     ],
 )
 def test_evidence_independence_threshold_boundary(

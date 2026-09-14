@@ -1,5 +1,11 @@
 """Claim extraction errors."""
 
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import GroundingAssessment
+
 
 class ClaimExtractionError(RuntimeError):
     """Base claim extraction error."""
@@ -27,3 +33,11 @@ class ClaimOutputValidationError(ClaimExtractionError):
 
 class ClaimGroundingError(ClaimExtractionError):
     """A structured claim could not be grounded in its source evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        assessments: Sequence["GroundingAssessment"] = (),
+    ) -> None:
+        super().__init__(message)
+        self.assessments = tuple(assessments)

@@ -6,7 +6,7 @@ from math import exp
 
 from app.claim_clustering.models import ClaimCluster, ClaimClusteringResult
 from app.models import ClaimSentiment
-from app.source_filtering.models import FilteredSource
+from app.source_filtering.models import FilteredSource, IndependenceState
 
 from .exceptions import ConfidenceInputError
 from .models import (
@@ -52,7 +52,9 @@ class EvidenceConfidenceEngine:
         self._validate_cluster_provenance(clusters, source_by_id)
         source_count = len(used_sources)
         independence_groups = {
-            source.independence_group_id for source in used_sources
+            source.independence_group_id
+            for source in used_sources
+            if source.independence_state is IndependenceState.CONFIRMED
         }
         domains = {source.domain.casefold() for source in used_sources}
 
@@ -132,10 +134,22 @@ class EvidenceConfidenceEngine:
         for cluster in clusters:
             metadata = [source_by_id[source_id] for source_id in cluster.source_ids]
             groups = {source.independence_group_id for source in metadata}
+            confirmed_groups = {
+                source.independence_group_id
+                for source in metadata
+                if source.independence_state is IndependenceState.CONFIRMED
+            }
             domains = {source.domain.casefold() for source in metadata}
             if groups != set(cluster.independence_group_ids):
                 raise ConfidenceInputError(
                     f"independence metadata disagrees with {cluster.cluster_id}"
+                )
+            if (
+                cluster.confirmed_independence_group_ids is not None
+                and confirmed_groups != set(cluster.confirmed_independence_group_ids)
+            ):
+                raise ConfidenceInputError(
+                    f"confirmed independence metadata disagrees with {cluster.cluster_id}"
                 )
             if domains != {domain.casefold() for domain in cluster.domains}:
                 raise ConfidenceInputError(
@@ -203,9 +217,14 @@ class EvidenceConfidenceEngine:
 
         months_by_group: dict[str, int] = {}
         for source_id, months in months_by_source.items():
-            group_id = source_by_id[source_id].independence_group_id
+            source = source_by_id[source_id]
+            if source.independence_state is not IndependenceState.CONFIRMED:
+                continue
+            group_id = source.independence_group_id
             months_by_group[group_id] = max(months, months_by_group.get(group_id, 0))
 
+        if not months_by_group:
+            return 0.0, set(months_by_source), set()
         group_count = len(months_by_group)
         absolute = self._saturating(
             group_count, self._policy.long_term_saturation_scale
@@ -228,7 +247,10 @@ class EvidenceConfidenceEngine:
     ) -> tuple[float, int]:
         signals_by_group: dict[str, list[float]] = defaultdict(list)
         for source in sources:
-            if source.commercial_signal is not None:
+            if (
+                source.independence_state is IndependenceState.CONFIRMED
+                and source.commercial_signal is not None
+            ):
                 signals_by_group[source.independence_group_id].append(
                     source.commercial_signal
                 )

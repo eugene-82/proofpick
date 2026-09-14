@@ -4,7 +4,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.source_filtering.models import FilteredSource
+from app.source_filtering.models import FilteredSource, IndependenceState
 
 
 class ConfidenceModel(BaseModel):
@@ -23,6 +23,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
     source_id: str = Field(pattern=r"^S\d{3,}$")
     domain: str = Field(min_length=1)
     independence_group_id: str = Field(pattern=r"^IG\d{3,}$")
+    independence_state: IndependenceState = IndependenceState.CONFIRMED
     commercial_signal: float | None = Field(default=None, ge=0, le=1)
 
     @classmethod
@@ -31,6 +32,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
             source_id=source.source_key,
             domain=source.domain,
             independence_group_id=source.independence_group_id,
+            independence_state=source.independence_state,
             commercial_signal=None,
         )
 

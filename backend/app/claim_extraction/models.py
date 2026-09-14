@@ -29,6 +29,36 @@ class ClaimExtractionPayload(ExtractionModel):
     claims: list[ExtractedClaim]
 
 
+class GroundingState(str, Enum):
+    VERIFIED = "VERIFIED"
+    UNCERTAIN = "UNCERTAIN"
+    REJECTED = "REJECTED"
+
+
+class GroundingReasonCode(str, Enum):
+    VERIFIED = "VERIFIED"
+    SOURCE_MISMATCH = "SOURCE_MISMATCH"
+    FRAGMENT_NOT_FOUND = "FRAGMENT_NOT_FOUND"
+    TINY_FRAGMENT = "TINY_FRAGMENT"
+    CLAIM_NOT_SUPPORTED = "CLAIM_NOT_SUPPORTED"
+    NEGATION_MISMATCH = "NEGATION_MISMATCH"
+    POLARITY_MISMATCH = "POLARITY_MISMATCH"
+    THIRD_PARTY_REPORT = "THIRD_PARTY_REPORT"
+    NON_EXPERIENCE = "NON_EXPERIENCE"
+    SPECULATION = "SPECULATION"
+    USAGE_PERIOD_MISMATCH = "USAGE_PERIOD_MISMATCH"
+    PRODUCT_IDENTITY_MISMATCH = "PRODUCT_IDENTITY_MISMATCH"
+
+
+class GroundingAssessment(ExtractionModel):
+    """Traceable decision about whether one extracted claim may drive decisions."""
+
+    claim: ExtractedClaim
+    state: GroundingState
+    reason_code: GroundingReasonCode
+    detail: str = Field(min_length=1)
+
+
 class ExtractionFailureCode(str, Enum):
     PROVIDER_ERROR = "provider_error"
     MALFORMED_OUTPUT = "malformed_output"
@@ -45,7 +75,8 @@ class ClaimExtractionFailure(ExtractionModel):
 
 
 class ClaimExtractionResult(ExtractionModel):
-    """Claims and explicit failures across all processed batches."""
+    """Verified claims, assessments, and explicit batch failures."""
 
     claims: list[ExtractedClaim] = Field(default_factory=list)
+    grounding_assessments: list[GroundingAssessment] = Field(default_factory=list)
     failures: list[ClaimExtractionFailure] = Field(default_factory=list)

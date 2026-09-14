@@ -1,5 +1,7 @@
 """Deterministic URL and content normalization."""
 
+import html
+import re
 from hashlib import sha256
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -17,10 +19,12 @@ TRACKING_PARAMETERS = frozenset(
         "fbclid",
     }
 )
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+TOKEN_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 class SourceNormalizer:
-    """Normalize stable URL identity and exact content fingerprints."""
+    """Normalize stable URL identity and conservative content identity."""
 
     def normalize_url(self, url: str | None) -> str:
         if url is None or not url.strip() or any(character.isspace() for character in url):
@@ -67,6 +71,15 @@ class SourceNormalizer:
         if not normalized_content:
             return None
         return sha256(normalized_content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def dependency_text(content: str | None) -> str | None:
+        """Return visible word content for explainable copy comparison."""
+        if content is None:
+            return None
+        visible = HTML_TAG_PATTERN.sub(" ", html.unescape(content))
+        tokens = TOKEN_PATTERN.findall(visible.casefold())
+        return " ".join(tokens) or None
 
     def domain_from_url(self, normalized_url: str) -> str:
         hostname = urlsplit(normalized_url).hostname

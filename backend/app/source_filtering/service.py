@@ -5,17 +5,18 @@ from collections.abc import Iterable
 from app.search.models import SearchResult
 
 from .base import SourceFilter
-from .deduplicator import SourceDeduplicator
 from .exceptions import InvalidSourceUrlError
 from .models import (
     DropReason,
     DroppedSource,
     FilteredSource,
+    IndependenceState,
     SourceCandidate,
     SourceFilterResult,
     SourceType,
 )
 from .normalizer import SourceNormalizer
+from .registry import SourceIdentityRegistry
 
 
 COMMUNITY_DOMAINS = frozenset(
@@ -27,10 +28,15 @@ COMMUNITY_DOMAINS = frozenset(
 
 
 class DeterministicSourceFilter(SourceFilter):
-    """Remove only clearly invalid, empty, or exact-duplicate sources."""
+    """Remove invalid and dependent sources across incremental snapshot runs."""
 
-    def __init__(self, normalizer: SourceNormalizer | None = None) -> None:
+    def __init__(
+        self,
+        normalizer: SourceNormalizer | None = None,
+        registry: SourceIdentityRegistry | None = None,
+    ) -> None:
         self._normalizer = normalizer or SourceNormalizer()
+        self._registry = registry or SourceIdentityRegistry()
 
     def filter(
         self,
@@ -38,10 +44,9 @@ class DeterministicSourceFilter(SourceFilter):
     ) -> SourceFilterResult:
         accepted: list[FilteredSource] = []
         dropped: list[DroppedSource] = []
-        deduplicator = SourceDeduplicator()
 
-        for position, source_input in enumerate(sources, start=1):
-            source_key = f"S{position:03d}"
+        for source_input in sources:
+            source_key = self._registry.next_source_key()
             source = self._as_candidate(source_input)
             original_url = source.url
 
@@ -72,9 +77,20 @@ class DeterministicSourceFilter(SourceFilter):
                 if source.raw_content and source.raw_content.strip()
                 else source.snippet
             )
-            content_hash = self._normalizer.content_fingerprint(fingerprint_content)
-            duplicate = deduplicator.find_duplicate(normalized_url, content_hash)
+            dependency_text = self._normalizer.dependency_text(fingerprint_content)
+            content_hash = self._normalizer.content_fingerprint(dependency_text)
+            deduplicator = self._registry.deduplicator
+            duplicate = deduplicator.find_duplicate(
+                normalized_url, content_hash, dependency_text
+            )
             if duplicate is not None:
+                if duplicate.reason is DropReason.DUPLICATE_URL:
+                    deduplicator.enrich(
+                        duplicate.representative_key,
+                        source,
+                        content_hash,
+                        dependency_text,
+                    )
                 dropped.append(
                     DroppedSource(
                         source_key=source_key,
@@ -82,6 +98,7 @@ class DeterministicSourceFilter(SourceFilter):
                         reason=duplicate.reason,
                         duplicate_of=duplicate.representative_key,
                         independence_group_id=duplicate.independence_group_id,
+                        independence_state=IndependenceState.DEPENDENT,
                     )
                 )
                 continue
@@ -98,10 +115,11 @@ class DeterministicSourceFilter(SourceFilter):
                 published_at=source.published_at,
                 source_type=source.source_type or self._classify_source_type(domain),
                 content_hash=content_hash,
-                independence_group_id=f"IG{len(accepted) + 1:03d}",
+                independence_group_id=self._registry.next_group_id(),
+                independence_state=source.independence_state,
             )
             accepted.append(accepted_source)
-            deduplicator.remember(accepted_source)
+            deduplicator.remember(accepted_source, dependency_text)
 
         return SourceFilterResult(accepted_sources=accepted, dropped_sources=dropped)
 

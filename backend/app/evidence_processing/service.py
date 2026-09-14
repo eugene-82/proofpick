@@ -27,11 +27,15 @@ class DeterministicEvidenceProcessor(EvidenceProcessor):
         if selected_text is None:
             return None
 
-        original_length = len(selected_text)
         cleaned_text = self._cleaner.clean(selected_text)
-        if not cleaned_text:
+        if not cleaned_text and evidence_source is EvidenceSource.RAW_CONTENT:
+            selected_text, evidence_source = self._select_snippet(source)
+            if selected_text is not None:
+                cleaned_text = self._cleaner.clean(selected_text)
+        if not cleaned_text or selected_text is None or evidence_source is None:
             return None
 
+        original_length = len(selected_text)
         compressed = self._compressor.compress(cleaned_text)
         compressed_length = len(compressed.text)
         return EvidenceDocument(
@@ -58,6 +62,10 @@ class DeterministicEvidenceProcessor(EvidenceProcessor):
     def _select_text(source: FilteredSource) -> tuple[str | None, EvidenceSource | None]:
         if source.raw_content is not None and source.raw_content.strip():
             return source.raw_content, EvidenceSource.RAW_CONTENT
+        return DeterministicEvidenceProcessor._select_snippet(source)
+
+    @staticmethod
+    def _select_snippet(source: FilteredSource) -> tuple[str | None, EvidenceSource | None]:
         if source.snippet is not None and source.snippet.strip():
             return source.snippet, EvidenceSource.SNIPPET
         return None, None

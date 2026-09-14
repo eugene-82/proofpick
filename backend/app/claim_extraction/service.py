@@ -21,6 +21,7 @@ from .models import (
     ClaimExtractionPayload,
     ClaimExtractionResult,
     ExtractionFailureCode,
+    GroundingAssessment,
 )
 from .policy import ClaimExtractionPolicy
 
@@ -29,10 +30,11 @@ from .policy import ClaimExtractionPolicy
 class _RejectedBatch(Exception):
     code: ExtractionFailureCode
     message: str
+    assessments: tuple[GroundingAssessment, ...] = ()
 
 
 class StructuredClaimExtractor:
-    """Validate and ground batched provider output before accepting claims."""
+    """Accept only structurally valid and VERIFIED claims."""
 
     def __init__(
         self,
@@ -51,10 +53,11 @@ class StructuredClaimExtractor:
             raise ValueError("evidence source IDs must be unique")
 
         claims = []
+        assessments: list[GroundingAssessment] = []
         failures: list[ClaimExtractionFailure] = []
         for batch_index, batch in enumerate(self._batcher.batches(document_list), start=1):
             try:
-                payload = self._extract_validated_batch(batch)
+                payload, batch_assessments = self._extract_validated_batch(batch)
             except ClaimProviderError as error:
                 failures.append(
                     self._failure(
@@ -65,32 +68,42 @@ class StructuredClaimExtractor:
                     )
                 )
             except _RejectedBatch as error:
+                assessments.extend(error.assessments)
                 failures.append(self._failure(batch_index, batch, error.code, error.message))
             else:
                 claims.extend(payload.claims)
-        return ClaimExtractionResult(claims=claims, failures=failures)
+                assessments.extend(batch_assessments)
+        return ClaimExtractionResult(
+            claims=claims,
+            grounding_assessments=assessments,
+            failures=failures,
+        )
 
     def _extract_validated_batch(
         self, batch: Sequence[EvidenceDocument]
-    ) -> ClaimExtractionPayload:
+    ) -> tuple[ClaimExtractionPayload, list[GroundingAssessment]]:
         last_error: Exception | None = None
+        last_assessments: tuple[GroundingAssessment, ...] = ()
         failure_code = ExtractionFailureCode.MALFORMED_OUTPUT
 
         for attempt in range(2):
             try:
                 output: Any = self._provider.extract_batch(batch, repair=attempt == 1)
                 payload = ClaimExtractionPayload.model_validate(output)
-                return self._grounding.validate(payload, batch)
+                return self._grounding.validate_with_assessments(payload, batch)
             except (ValidationError, ClaimOutputValidationError) as error:
                 last_error = error
                 failure_code = ExtractionFailureCode.MALFORMED_OUTPUT
+                last_assessments = ()
             except ClaimGroundingError as error:
                 last_error = error
                 failure_code = ExtractionFailureCode.GROUNDING_ERROR
+                last_assessments = error.assessments
 
         raise _RejectedBatch(
             code=failure_code,
             message=str(last_error) or "claim output validation failed",
+            assessments=last_assessments,
         )
 
     @staticmethod

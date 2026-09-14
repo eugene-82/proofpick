@@ -1,4 +1,4 @@
-"""Structured, grounded claim extraction."""
+"""Structured, conservatively grounded claim extraction."""
 
 from .base import ClaimExtractionProvider
 from .batching import ClaimBatcher
@@ -18,6 +18,9 @@ from .models import (
     ClaimExtractionResult,
     ExtractedClaim,
     ExtractionFailureCode,
+    GroundingAssessment,
+    GroundingReasonCode,
+    GroundingState,
 )
 from .openai_provider import OpenAIClaimExtractionProvider
 from .policy import CLAIM_EXTRACTION_PROMPT_VERSION, ClaimExtractionPolicy
@@ -41,6 +44,9 @@ __all__ = [
     "ClaimProviderTimeoutError",
     "ExtractedClaim",
     "ExtractionFailureCode",
+    "GroundingAssessment",
+    "GroundingReasonCode",
+    "GroundingState",
     "OpenAIClaimExtractionProvider",
     "StructuredClaimExtractor",
 ]

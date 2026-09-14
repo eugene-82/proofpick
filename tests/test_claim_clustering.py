@@ -11,7 +11,7 @@ from app.claim_clustering import (
     SourceMetadataError,
 )
 from app.claim_extraction import ExtractedClaim
-from app.source_filtering import FilteredSource, SourceType
+from app.source_filtering import FilteredSource, IndependenceState, SourceType
 
 
 class FakeEmbeddingProvider(EmbeddingProvider):
@@ -67,6 +67,7 @@ def filtered_source(
         snippet="Evidence.",
         source_type=SourceType.WEB,
         independence_group_id=independence_group_id or f"IG{source_id[1:]}",
+        independence_state=IndependenceState.CONFIRMED,
     )
 
 
