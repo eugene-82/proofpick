@@ -2,14 +2,17 @@
 
 These invariants protect the evidence-to-decision path before counter-evidence search is added.
 
-- Independent evidence means a distinct, confirmed independence group. Exact URL/content copies and conservative near-copies are dependent; unknown independence is never promoted to confirmed support.
-- Source and independence-group IDs come from one analysis-local `SourceIdentityRegistry`. Incremental filtering passes must reuse that registry so IDs cannot collide and duplicates reconcile to the original representative.
-- Only `VERIFIED` grounded claims may enter clustering, confidence, or purchase decisions. `UNCERTAIN` and `REJECTED` assessments remain observable but are excluded from decision evidence.
-- Grounding requires source membership, meaningful source text, semantic support, compatible polarity/negation, direct-experience safety, explicit usage duration, and target-product consistency when identity is available.
-- Claim clusters are deterministic complete-link groups within normalized aspect and sentiment partitions. Every new member must meet the configured similarity threshold against every existing member; bridge chains cannot create support.
-- Severity is aggregated once per independence group using that group's maximum observed severity. SKIP support counts confirmed groups at the high-severity threshold, so copied URLs cannot add weight and a minor report cannot dilute repeated severe reports.
+- Independence is explicit and deterministic. A distinct substantive raw result can be CONFIRMED; snippet/title-only or possible near-duplicates remain UNKNOWN; exact and established copies are DEPENDENT. Only confirmed groups increase independent support.
+- Similarity alone does not delete evidence. Changes to polarity/negation, numeric observations, author identity, or claim-bearing signals preserve both sources and leave uncertain independence unresolved.
+- Source and group IDs come from one analysis-local SourceIdentityRegistry. Incremental passes reuse it; enrichment reindexes final retained content, protects richer representatives, and maps dependent URL aliases back to the original group.
+- Only VERIFIED grounded claims may enter a decision-driving snapshot. Subject, predicate, polarity, direct-experience, and product-generation checks apply on initial and repair attempts.
+- Claim-core validity is separate from optional metadata validity. Unsupported usage_period_months is removed and reported as a metadata issue without discarding an otherwise grounded claim.
+- Compression is deterministic and extractive. It covers document regions, preserves positive counter-evidence and risks together, redistributes unused budget, and avoids cutting negation context.
+- Confidence carries evidence quality, verified-claim coverage, and observation horizon. Snippet-only mass, entirely unknown quality, no verified coverage, and first-impression-only durability support cannot produce an overconfident BUY. Observation duration is not a universal requirement for non-durability claims.
+- Unresolved severe risks are computed before decision branching and retained on every applicable return path. Positive support and insufficient-evidence early returns cannot erase them.
+- Complete-link clustering keeps the configured threshold unchanged and first canonicalizes claim order. The same claim set therefore produces the same clusters and downstream decision regardless of caller order.
+- EvaluationSnapshot binds analysis, snapshot, stable product identity, registry revision, source/group identities, evidence documents, and verified claims. Snapshot-aware clustering and confidence propagate those tags; decision evaluation rejects incomplete or mismatched tags.
+- Severity is aggregated once per independence group using the group's maximum observed severity. Copied URLs cannot add weight, and a minor report cannot dilute repeated severe reports.
 - BUY requires sufficient evidence plus affirmative independently supported claims, with no blocking issue or unresolved major risk/conflict. Neutral-only evidence never defaults to BUY.
-- A severe report without repeated confirmed support does not force SKIP, but it is retained in `unresolved_risks` and prevents BUY.
-- Evidence compression is extractive and bounded. It prioritizes risk, usage, and negation context and avoids slicing away a negation token. If cleaned raw content is empty, a useful snippet is used.
 
-Numeric threshold calibration remains deferred to TASK 019.
+Numeric threshold and product-category calibration remain deferred to TASK 019. Counter-evidence search and persistence remain deferred to TASK 012 and later tasks.

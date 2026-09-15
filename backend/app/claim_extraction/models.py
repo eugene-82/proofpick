@@ -48,6 +48,8 @@ class GroundingReasonCode(str, Enum):
     SPECULATION = "SPECULATION"
     USAGE_PERIOD_MISMATCH = "USAGE_PERIOD_MISMATCH"
     PRODUCT_IDENTITY_MISMATCH = "PRODUCT_IDENTITY_MISMATCH"
+    SUBJECT_PREDICATE_MISMATCH = "SUBJECT_PREDICATE_MISMATCH"
+    USAGE_PERIOD_DROPPED = "USAGE_PERIOD_DROPPED"
 
 
 class GroundingAssessment(ExtractionModel):
@@ -57,6 +59,7 @@ class GroundingAssessment(ExtractionModel):
     state: GroundingState
     reason_code: GroundingReasonCode
     detail: str = Field(min_length=1)
+    metadata_issues: list[GroundingReasonCode] = Field(default_factory=list)
 
 
 class ExtractionFailureCode(str, Enum):

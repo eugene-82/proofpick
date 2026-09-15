@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.claim_clustering import ClaimCluster, ClaimClusteringResult, ClusterMember
 from app.claim_extraction import ExtractedClaim
+from app.evidence_processing import EvidenceQuality
 from app.confidence import (
     ConfidenceInputError,
     ConfidenceLevel,
@@ -27,6 +28,9 @@ def source(
         domain=domain or f"platform-{index}.example",
         independence_group_id=f"IG{(group or index):03d}",
         commercial_signal=commercial_signal,
+        evidence_quality=EvidenceQuality.FULL_CONTENT,
+        verified_claim_count=1,
+        extracted_claim_count=1,
     )
 
 

@@ -1,18 +1,15 @@
 """Structured and reusable purchase-decision outputs."""
 
 from enum import Enum
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from app.models import ClaimSentiment, PurchaseDecision
-
 
 class DecisionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-
 class DecisionReasonCode(str, Enum):
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    INSUFFICIENT_EVIDENCE_QUALITY = "INSUFFICIENT_EVIDENCE_QUALITY"
     LOW_EVIDENCE_CONFIDENCE = "LOW_EVIDENCE_CONFIDENCE"
     INSUFFICIENT_INDEPENDENT_EVIDENCE = "INSUFFICIENT_INDEPENDENT_EVIDENCE"
     NO_MEANINGFUL_CLAIMS = "NO_MEANINGFUL_CLAIMS"
@@ -24,7 +21,6 @@ class DecisionReasonCode(str, Enum):
     UNRESOLVED_SEVERE_RISK = "UNRESOLVED_SEVERE_RISK"
     NO_AFFIRMATIVE_SUPPORT = "NO_AFFIRMATIVE_SUPPORT"
     NO_BLOCKING_ISSUES = "NO_BLOCKING_ISSUES"
-
 
 class DecisionSignal(DecisionModel):
     reason_code: DecisionReasonCode
@@ -38,7 +34,6 @@ class DecisionSignal(DecisionModel):
     high_severity_independent_support: int = Field(default=0, ge=0)
     domain_count: int = Field(ge=1)
     long_term_evidence: bool
-
 
 class PurchaseDecisionResult(DecisionModel):
     decision: PurchaseDecision
@@ -57,10 +52,8 @@ class PurchaseDecisionResult(DecisionModel):
             raise ValueError("BUY_IF requires at least one condition")
         if self.decision is PurchaseDecision.SKIP and not self.blocking_issues:
             raise ValueError("SKIP requires at least one blocking issue")
-        expected_alternatives = self.decision is PurchaseDecision.SKIP
-        if self.should_find_alternatives is not expected_alternatives:
+        if self.should_find_alternatives is not (self.decision is PurchaseDecision.SKIP):
             raise ValueError("alternative trigger must match a SKIP decision")
-        expected_sufficient = self.decision is not PurchaseDecision.EARLY_ADOPTER
-        if self.evidence_sufficient is not expected_sufficient:
+        if self.evidence_sufficient is not (self.decision is not PurchaseDecision.EARLY_ADOPTER):
             raise ValueError("only EARLY_ADOPTER may have insufficient evidence")
         return self

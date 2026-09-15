@@ -1,90 +1,101 @@
 """Exact and conservative near-duplicate source tracking."""
 
+import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from .models import DropReason, FilteredSource, SourceCandidate
 
+NEGATION_PATTERN = re.compile(r"\b(?:not|never|no|without|isn['’]?t|wasn['’]?t|didn['’]?t)\b", re.I)
+CLAIM_SIGNAL_PATTERN = re.compile(
+    r"\b(?:fail(?:ed|s|ure)?|fire|overheat(?:ed|ing)?|broken|disconnect(?:ed|ing)?|"
+    r"drain(?:ed|ing)?|works?|reliable|great|good|excellent)\b", re.I
+)
+NUMBER_PATTERN = re.compile(r"\b\d+(?:\.\d+)?\b")
+AUTHOR_PATTERN = re.compile(r"\b(?:author|reviewer|by|user)\s*[:#-]?\s*([\w.-]+)", re.I)
+
 
 @dataclass(frozen=True)
 class DuplicateMatch:
-    """The accepted representative for a dependent duplicate."""
-
     reason: DropReason
     representative_key: str
     independence_group_id: str
+    drop: bool = True
+    can_enrich: bool = False
 
 
 class SourceDeduplicator:
-    """Track URL, cleaned content, and strong near-copy identity."""
-
     def __init__(self, near_duplicate_threshold: float = 0.90) -> None:
         if not 0 <= near_duplicate_threshold <= 1:
             raise ValueError("near_duplicate_threshold must be between 0 and 1")
         self._near_duplicate_threshold = near_duplicate_threshold
-        self._by_url: dict[str, tuple[str, str]] = {}
+        self._by_url: dict[str, tuple[str, str, bool]] = {}
         self._by_content_hash: dict[str, tuple[str, str]] = {}
         self._dependency_text_by_key: dict[str, str] = {}
         self._source_by_key: dict[str, FilteredSource] = {}
 
-    def find_duplicate(
-        self,
-        normalized_url: str,
-        content_hash: str | None,
-        dependency_text: str | None = None,
-    ) -> DuplicateMatch | None:
+    def find_duplicate(self, normalized_url: str, content_hash: str | None,
+                       dependency_text: str | None = None) -> DuplicateMatch | None:
         url_match = self._by_url.get(normalized_url)
         if url_match is not None:
-            return self._match(DropReason.DUPLICATE_URL, url_match)
-
-        if content_hash is not None:
-            content_match = self._by_content_hash.get(content_hash)
-            if content_match is not None:
-                return self._match(DropReason.DUPLICATE_CONTENT, content_match)
-
+            key, group, can_enrich = url_match
+            return DuplicateMatch(DropReason.DUPLICATE_URL, key, group, can_enrich=can_enrich)
+        if content_hash is not None and (match := self._by_content_hash.get(content_hash)):
+            return DuplicateMatch(DropReason.DUPLICATE_CONTENT, match[0], match[1])
         if dependency_text is not None and len(dependency_text.split()) >= 5:
-            for source_key, remembered_text in self._dependency_text_by_key.items():
-                if len(remembered_text.split()) < 5:
+            for source_key, remembered in self._dependency_text_by_key.items():
+                if len(remembered.split()) < 5:
                     continue
-                similarity = SequenceMatcher(
-                    None, remembered_text, dependency_text, autojunk=False
-                ).ratio()
+                similarity = SequenceMatcher(None, remembered, dependency_text, autojunk=False).ratio()
                 if similarity >= self._near_duplicate_threshold:
                     source = self._source_by_key[source_key]
                     return DuplicateMatch(
-                        reason=DropReason.NEAR_DUPLICATE_CONTENT,
-                        representative_key=source.source_key,
-                        independence_group_id=source.independence_group_id,
+                        DropReason.NEAR_DUPLICATE_CONTENT, source.source_key,
+                        source.independence_group_id,
+                        drop=not self._meaningfully_different(remembered, dependency_text),
                     )
         return None
 
+    @staticmethod
+    def _meaningfully_different(left: str, right: str) -> bool:
+        if bool(NEGATION_PATTERN.search(left)) != bool(NEGATION_PATTERN.search(right)):
+            return True
+        if set(NUMBER_PATTERN.findall(left)) != set(NUMBER_PATTERN.findall(right)):
+            return True
+        if set(AUTHOR_PATTERN.findall(left)) != set(AUTHOR_PATTERN.findall(right)):
+            return True
+        left_signals = {value.casefold() for value in CLAIM_SIGNAL_PATTERN.findall(left)}
+        right_signals = {value.casefold() for value in CLAIM_SIGNAL_PATTERN.findall(right)}
+        return left_signals != right_signals
+
     def remember(self, source: FilteredSource, dependency_text: str | None) -> None:
         identity = (source.source_key, source.independence_group_id)
-        self._by_url[source.normalized_url] = identity
+        self._by_url[source.normalized_url] = (*identity, True)
         if source.content_hash is not None:
             self._by_content_hash[source.content_hash] = identity
         if dependency_text is not None:
             self._dependency_text_by_key[source.source_key] = dependency_text
         self._source_by_key[source.source_key] = source
 
-    def enrich(
-        self,
-        representative_key: str,
-        candidate: SourceCandidate,
-        content_hash: str | None,
-        dependency_text: str | None,
-    ) -> None:
-        """Merge richer data from a duplicate URL into its stable representative."""
+    def remember_alias(self, normalized_url: str, representative_key: str) -> None:
+        source = self._source_by_key[representative_key]
+        if normalized_url == source.normalized_url:
+            return
+        self._by_url[normalized_url] = (representative_key, source.independence_group_id, False)
+
+    def enrich(self, representative_key: str, candidate: SourceCandidate,
+               normalize_text, fingerprint) -> FilteredSource:
         source = self._source_by_key[representative_key]
         source.title = self._richer(source.title, candidate.title)
         source.snippet = self._richer(source.snippet, candidate.snippet)
-        previous_raw = source.raw_content
         source.raw_content = self._richer(source.raw_content, candidate.raw_content)
         if source.published_at is None:
             source.published_at = candidate.published_at
-        if source.raw_content != previous_raw and content_hash is not None:
-            source.content_hash = content_hash
-        self.remember(source, dependency_text)
+        final_content = source.raw_content or source.snippet
+        final_text = normalize_text(final_content)
+        source.content_hash = fingerprint(final_text)
+        self.remember(source, final_text)
+        return source
 
     @staticmethod
     def _richer(current: str | None, candidate: str | None) -> str | None:
@@ -93,11 +104,3 @@ class SourceDeduplicator:
         if current is None or len(candidate.strip()) > len(current.strip()):
             return candidate
         return current
-
-    @staticmethod
-    def _match(reason: DropReason, identity: tuple[str, str]) -> DuplicateMatch:
-        return DuplicateMatch(
-            reason=reason,
-            representative_key=identity[0],
-            independence_group_id=identity[1],
-        )

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from math import exp
 
 from app.claim_clustering.models import ClaimCluster, ClaimClusteringResult
+from app.evidence_processing.models import EvidenceQuality, ObservationState
 from app.models import ClaimSentiment
 from app.source_filtering.models import FilteredSource, IndependenceState
 
@@ -13,6 +14,7 @@ from .models import (
     ConfidenceComponentBreakdown,
     ConfidenceEvidenceMetrics,
     ConfidenceLevel,
+    ConfidenceQualityIssue,
     ConfidenceResult,
     ConfidenceSourceMetadata,
 )
@@ -32,7 +34,7 @@ class EvidenceConfidenceEngine:
     ) -> ConfidenceResult:
         clusters = clustering_result.clusters
         if not clusters:
-            return self._empty_result()
+            return self._empty_result(clustering_result)
 
         source_by_id = self._source_lookup(sources)
         used_source_ids = list(
@@ -84,10 +86,14 @@ class EvidenceConfidenceEngine:
         if len(independence_groups) <= 1:
             overall = min(overall, self._policy.single_independent_source_cap)
         overall = self._rounded(overall)
+        quality_issues = self._quality_issues(clusters, used_sources)
+        level = self._level(overall)
+        if quality_issues and level is ConfidenceLevel.HIGH:
+            level = ConfidenceLevel.MEDIUM
 
         return ConfidenceResult(
             overall_score=overall,
-            confidence_level=self._level(overall),
+            confidence_level=level,
             components=ConfidenceComponentBreakdown(
                 evidence_volume_score=self._rounded(volume),
                 independence_score=self._rounded(independence),
@@ -106,7 +112,45 @@ class EvidenceConfidenceEngine:
                 long_term_independent_source_count=len(long_term_groups),
                 commercial_signal_group_count=commercial_group_count,
             ),
+            quality_gate_passed=not quality_issues,
+            quality_issues=quality_issues,
+            analysis_id=clustering_result.analysis_id,
+            snapshot_id=clustering_result.snapshot_id,
+            product_identity=clustering_result.product_identity,
+            registry_id=clustering_result.registry_id,
+            registry_revision=clustering_result.registry_revision,
         )
+
+    @staticmethod
+    def _quality_issues(
+        clusters: list[ClaimCluster],
+        sources: list[ConfidenceSourceMetadata],
+    ) -> list[ConfidenceQualityIssue]:
+        issues: list[ConfidenceQualityIssue] = []
+        if sources and all(
+            source.evidence_quality is EvidenceQuality.SNIPPET_ONLY for source in sources
+        ):
+            issues.append(ConfidenceQualityIssue.SNIPPET_ONLY_COVERAGE)
+        if sum(source.verified_claim_count for source in sources) == 0:
+            issues.append(ConfidenceQualityIssue.NO_VERIFIED_CLAIM_COVERAGE)
+        if sources and all(
+            source.evidence_quality is EvidenceQuality.UNKNOWN for source in sources
+        ):
+            issues.append(ConfidenceQualityIssue.UNKNOWN_SOURCE_QUALITY)
+        durability_aspects = {
+            "battery", "battery_health", "battery_life", "durability", "reliability"
+        }
+        durability_clusters = [
+            cluster for cluster in clusters
+            if cluster.aspect in durability_aspects
+            and cluster.sentiment is ClaimSentiment.POSITIVE
+        ]
+        if durability_clusters and sources and all(
+            source.observation_state is ObservationState.FIRST_IMPRESSION
+            for source in sources
+        ):
+            issues.append(ConfidenceQualityIssue.INSUFFICIENT_DURABILITY_OBSERVATION)
+        return issues
 
     @staticmethod
     def _source_lookup(
@@ -266,7 +310,7 @@ class EvidenceConfidenceEngine:
             return ConfidenceLevel.MEDIUM
         return ConfidenceLevel.LOW
 
-    def _empty_result(self) -> ConfidenceResult:
+    def _empty_result(self, clustering_result: ClaimClusteringResult) -> ConfidenceResult:
         return ConfidenceResult(
             overall_score=0.0,
             confidence_level=ConfidenceLevel.LOW,
@@ -288,7 +332,46 @@ class EvidenceConfidenceEngine:
                 long_term_independent_source_count=0,
                 commercial_signal_group_count=0,
             ),
+            analysis_id=clustering_result.analysis_id,
+            snapshot_id=clustering_result.snapshot_id,
+            product_identity=clustering_result.product_identity,
+            registry_id=clustering_result.registry_id,
+            registry_revision=clustering_result.registry_revision,
         )
+
+    def evaluate_snapshot(
+        self,
+        snapshot,
+        clustering_result: ClaimClusteringResult,
+    ) -> ConfidenceResult:
+        expected = (
+            snapshot.analysis_id,
+            snapshot.snapshot_id,
+            snapshot.product_identity,
+            snapshot.registry_id,
+            snapshot.registry_revision,
+        )
+        actual = (
+            clustering_result.analysis_id,
+            clustering_result.snapshot_id,
+            clustering_result.product_identity,
+            clustering_result.registry_id,
+            clustering_result.registry_revision,
+        )
+        if actual != expected:
+            raise ConfidenceInputError("clusters do not belong to the supplied snapshot")
+        verified_counts: dict[str, int] = defaultdict(int)
+        for assessment in snapshot.grounding_assessments:
+            verified_counts[assessment.claim.source_id] += 1
+        metadata = [
+            ConfidenceSourceMetadata.from_evidence_document(
+                document,
+                verified_claim_count=verified_counts[document.source_key],
+                extracted_claim_count=verified_counts[document.source_key],
+            )
+            for document in snapshot.evidence_documents
+        ]
+        return self.evaluate(clustering_result, metadata)
 
     @staticmethod
     def _saturating(count: int, scale: float) -> float:

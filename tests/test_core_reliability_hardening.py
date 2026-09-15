@@ -233,7 +233,7 @@ def test_same_domain_distinct_posts_remain_distinct() -> None:
     assert len(result.accepted_sources) == 2
 
 
-def test_unknown_independence_is_not_counted_as_confirmed() -> None:
+def test_substantive_raw_search_path_can_confirm_independence() -> None:
     filtered = DeterministicSourceFilter().filter(
         [candidate("https://unknown.example/review", "A sufficiently detailed product review.", independence=IndependenceState.UNKNOWN)]
     ).accepted_sources[0]
@@ -242,8 +242,8 @@ def test_unknown_independence_is_not_counted_as_confirmed() -> None:
     clustering = SemanticClaimClusterer(provider).cluster([extracted], [filtered])
     result = EvidenceConfidenceEngine().evaluate(clustering, [filtered])
 
-    assert clustering.clusters[0].independent_source_count == 0
-    assert result.metrics.independent_source_count == 0
+    assert clustering.clusters[0].independent_source_count == 1
+    assert result.metrics.independent_source_count == 1
 
 
 def test_same_url_later_richer_result_enriches_stable_representative() -> None:
@@ -379,20 +379,20 @@ def test_real_usage_sentence_is_grounded_beside_marketing_copy() -> None:
 
     assert result.claims == [grounded]
 
-def test_warranty_and_decimal_are_not_usage_duration() -> None:
+def test_warranty_and_decimal_are_not_usage_duration_metadata() -> None:
     validator = ClaimGroundingValidator()
     for text, fragment in [
         ("Warranty lasts 12 months.", "Warranty lasts 12 months"),
         ("I used it for 0.6 months.", "used it for 0.6 months"),
     ]:
-        with pytest.raises(ClaimGroundingError) as error:
-            validator.validate(
-                ClaimExtractionPayload(
-                    claims=[claim(fragment, fragment, sentiment="neutral", months=12 if "Warranty" in text else 6)]
-                ),
-                [document(text)],
-            )
-        assert error.value.assessments[0].reason_code is GroundingReasonCode.USAGE_PERIOD_MISMATCH
+        payload, assessments = validator.validate_with_assessments(
+            ClaimExtractionPayload(
+                claims=[claim(fragment, fragment, sentiment="neutral", months=12 if "Warranty" in text else 6)]
+            ),
+            [document(text)],
+        )
+        assert payload.claims[0].usage_period_months is None
+        assert assessments[0].metadata_issues == [GroundingReasonCode.USAGE_PERIOD_DROPPED]
 
 
 @pytest.mark.parametrize(

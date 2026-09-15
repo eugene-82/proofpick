@@ -52,7 +52,15 @@ class DeterministicProductResolver(ProductResolver):
         normalized_input = self._normalize_input(product_input)
 
         if self._contains_airpods_pro(normalized_input):
-            if self._ACCESSORY_PATTERN.search(normalized_input):
+            accessory = self._ACCESSORY_PATTERN.search(normalized_input)
+            safe_bundle = bool(
+                re.search(
+                    r"\bairpods\s+pro\s+(?:2|2nd)(?:\s+generation)?\s+with\s+"
+                    r"magsafe\s+charging\s+case\b",
+                    normalized_input,
+                )
+            )
+            if accessory and not safe_bundle:
                 return ProductResolution(
                     ambiguous=True,
                     confidence=0,

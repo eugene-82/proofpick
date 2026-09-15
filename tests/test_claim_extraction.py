@@ -9,6 +9,7 @@ from app.claim_extraction import (
     ClaimExtractionProvider,
     ClaimProviderError,
     ExtractedClaim,
+    GroundingReasonCode,
     ExtractionFailureCode,
     StructuredClaimExtractor,
 )
@@ -227,18 +228,22 @@ def test_whitespace_normalized_fragment_is_grounded() -> None:
     assert len(result.claims) == 1
 
 
-def test_guessed_usage_period_is_rejected() -> None:
-    invalid = {
+def test_guessed_usage_period_is_dropped_without_discarding_claim_core() -> None:
+    output = {
         "claims": [
             claim("S001", "Battery performance declined.", usage_period_months=12)
         ]
     }
-    provider = FakeClaimProvider([invalid, invalid])
+    provider = FakeClaimProvider([output])
     result = StructuredClaimExtractor(provider).extract(
         [evidence("S001", "Battery performance declined.")]
     )
 
-    assert result.failures[0].code is ExtractionFailureCode.GROUNDING_ERROR
+    assert not result.failures
+    assert result.claims[0].usage_period_months is None
+    assert result.grounding_assessments[0].metadata_issues == [
+        GroundingReasonCode.USAGE_PERIOD_DROPPED
+    ]
 
 
 def test_batch_document_count_is_limited() -> None:

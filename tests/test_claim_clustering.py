@@ -186,11 +186,11 @@ def test_provenance_counts_unique_sources_groups_and_domains() -> None:
 
     cluster = SemanticClaimClusterer(provider).cluster(claims, sources).clusters[0]
 
-    assert cluster.source_ids == ["S001", "S002", "S003"]
+    assert cluster.source_ids == ["S002", "S001", "S003"]
     assert cluster.source_count == 3
-    assert cluster.independence_group_ids == ["IG001", "IG002"]
+    assert cluster.independence_group_ids == ["IG002", "IG001"]
     assert cluster.independent_source_count == 2
-    assert cluster.domains == ["reddit.com", "forum.example"]
+    assert cluster.domains == ["forum.example", "reddit.com"]
     assert cluster.domain_count == 2
     assert len(cluster.members) == 4
 
@@ -215,7 +215,7 @@ def test_cluster_and_member_ordering_is_stable() -> None:
 
     assert first == second
     assert [cluster.cluster_id for cluster in first.clusters] == ["CL001", "CL002"]
-    assert [member.claim_id for member in first.clusters[0].members] == ["C001", "C003"]
+    assert [member.claim_id for member in first.clusters[0].members] == ["C001", "C002"]
 
 
 def test_similarity_threshold_boundary_is_inclusive() -> None:

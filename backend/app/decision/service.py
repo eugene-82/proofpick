@@ -8,6 +8,7 @@ from app.confidence.models import ConfidenceLevel, ConfidenceResult
 from app.models import ClaimSentiment, PurchaseDecision
 from app.source_filtering.models import IndependenceState
 
+from .exceptions import DecisionInputError
 from .models import DecisionReasonCode, DecisionSignal, PurchaseDecisionResult
 from .policy import DecisionPolicy
 
@@ -16,135 +17,105 @@ class PurchaseDecisionEngine:
     def __init__(self, policy: DecisionPolicy = DecisionPolicy()) -> None:
         self._policy = policy
 
-    def evaluate(
-        self,
-        confidence: ConfidenceResult,
-        clustering_result: ClaimClusteringResult,
-    ) -> PurchaseDecisionResult:
+    def evaluate(self, confidence: ConfidenceResult,
+                 clustering_result: ClaimClusteringResult) -> PurchaseDecisionResult:
+        self._validate_snapshot_contract(confidence, clustering_result)
         clusters = clustering_result.clusters
-        insufficiency_reasons = self._insufficiency_reasons(confidence, clusters)
-        if insufficiency_reasons:
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.EARLY_ADOPTER,
-                confidence_score=confidence.overall_score,
-                reasons=insufficiency_reasons,
-                evidence_sufficient=False,
-                should_find_alternatives=False,
-            )
-
-        conflict_aspects = self._conflict_aspects(clusters)
-        negative_clusters = [
-            cluster for cluster in clusters if cluster.sentiment is ClaimSentiment.NEGATIVE
-        ]
+        negative = [c for c in clusters if c.sentiment is ClaimSentiment.NEGATIVE]
         blocking = self._sorted_signals(
-            self._signal(cluster, DecisionReasonCode.REPEATED_HIGH_SEVERITY_ISSUE)
-            for cluster in negative_clusters
-            if self._is_blocking(cluster)
+            self._signal(c, DecisionReasonCode.REPEATED_HIGH_SEVERITY_ISSUE)
+            for c in negative if self._is_blocking(c)
         )
+        conditions = self._sorted_signals(
+            self._signal(c, DecisionReasonCode.LONG_TERM_NEGATIVE_ISSUE
+                         if self._has_long_term_evidence(c)
+                         else DecisionReasonCode.CONDITIONAL_NEGATIVE_ISSUE)
+            for c in negative if self._is_conditional(c)
+        )
+        severe = self._sorted_signals(
+            self._signal(c, DecisionReasonCode.UNRESOLVED_SEVERE_RISK)
+            for c in negative if self._has_unresolved_severe_risk(c)
+        )
+        supporting = self._positive_signals(clusters)
+        conflict_aspects = self._conflict_aspects(clusters)
+        insufficiency = self._insufficiency_reasons(confidence, clusters)
+        if insufficiency:
+            return self._result(PurchaseDecision.EARLY_ADOPTER, confidence, insufficiency,
+                                severe, supporting=supporting, sufficient=False)
+
         if blocking:
             reasons = [DecisionReasonCode.REPEATED_HIGH_SEVERITY_ISSUE]
             if any(issue.aspect in conflict_aspects for issue in blocking):
                 reasons.append(DecisionReasonCode.CONFLICTING_EVIDENCE)
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.SKIP,
-                confidence_score=confidence.overall_score,
-                reasons=reasons,
-                blocking_issues=blocking,
-                supporting_signals=self._positive_signals(clusters),
-                evidence_sufficient=True,
-                should_find_alternatives=True,
-            )
+            blocked_ids = {signal.cluster_id for signal in blocking}
+            unresolved = [signal for signal in severe if signal.cluster_id not in blocked_ids]
+            return self._result(PurchaseDecision.SKIP, confidence, reasons, unresolved,
+                                blocking=blocking, supporting=supporting, sufficient=True)
 
-        conditions = self._sorted_signals(
-            self._signal(
-                cluster,
-                DecisionReasonCode.LONG_TERM_NEGATIVE_ISSUE
-                if self._has_long_term_evidence(cluster)
-                else DecisionReasonCode.CONDITIONAL_NEGATIVE_ISSUE,
-            )
-            for cluster in negative_clusters
-            if self._is_conditional(cluster)
-        )
         if conditions:
             reasons = list(dict.fromkeys(issue.reason_code for issue in conditions))
             if any(issue.aspect in conflict_aspects for issue in conditions):
                 reasons.append(DecisionReasonCode.CONFLICTING_EVIDENCE)
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.BUY_IF,
-                confidence_score=confidence.overall_score,
-                reasons=reasons,
-                conditions=conditions,
-                supporting_signals=self._positive_signals(clusters),
-                evidence_sufficient=True,
-                should_find_alternatives=False,
-            )
+            condition_ids = {signal.cluster_id for signal in conditions}
+            unresolved = [signal for signal in severe if signal.cluster_id not in condition_ids]
+            return self._result(PurchaseDecision.BUY_IF, confidence, reasons, unresolved,
+                                conditions=conditions, supporting=supporting, sufficient=True)
 
-        severe_risks = self._sorted_signals(
-            self._signal(cluster, DecisionReasonCode.UNRESOLVED_SEVERE_RISK)
-            for cluster in negative_clusters
-            if self._has_unresolved_severe_risk(cluster)
+        if severe:
+            return self._result(PurchaseDecision.EARLY_ADOPTER, confidence,
+                                [DecisionReasonCode.UNRESOLVED_SEVERE_RISK], severe,
+                                supporting=supporting, sufficient=False)
+
+        conflicting = self._sorted_signals(
+            self._signal(c, DecisionReasonCode.CONFLICTING_EVIDENCE)
+            for c in negative if c.aspect in conflict_aspects
         )
-        if severe_risks:
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.EARLY_ADOPTER,
-                confidence_score=confidence.overall_score,
-                reasons=[DecisionReasonCode.UNRESOLVED_SEVERE_RISK],
-                unresolved_risks=severe_risks,
-                supporting_signals=self._positive_signals(clusters),
-                evidence_sufficient=False,
-                should_find_alternatives=False,
-            )
-
-        conflicting_risks = self._sorted_signals(
-            self._signal(cluster, DecisionReasonCode.CONFLICTING_EVIDENCE)
-            for cluster in negative_clusters
-            if cluster.aspect in conflict_aspects
-        )
-        if conflicting_risks:
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.EARLY_ADOPTER,
-                confidence_score=confidence.overall_score,
-                reasons=[DecisionReasonCode.CONFLICTING_EVIDENCE],
-                unresolved_risks=conflicting_risks,
-                supporting_signals=self._positive_signals(clusters),
-                evidence_sufficient=False,
-                should_find_alternatives=False,
-            )
-
-        supporting = self._positive_signals(clusters)
+        if conflicting:
+            return self._result(PurchaseDecision.EARLY_ADOPTER, confidence,
+                                [DecisionReasonCode.CONFLICTING_EVIDENCE], conflicting,
+                                supporting=supporting, sufficient=False)
         if supporting:
-            return PurchaseDecisionResult(
-                decision=PurchaseDecision.BUY,
-                confidence_score=confidence.overall_score,
-                reasons=[
-                    DecisionReasonCode.NO_BLOCKING_ISSUES,
-                    DecisionReasonCode.STRONG_POSITIVE_SUPPORT,
-                ],
-                supporting_signals=supporting,
-                evidence_sufficient=True,
-                should_find_alternatives=False,
+            return self._result(
+                PurchaseDecision.BUY, confidence,
+                [DecisionReasonCode.NO_BLOCKING_ISSUES,
+                 DecisionReasonCode.STRONG_POSITIVE_SUPPORT],
+                [], supporting=supporting, sufficient=True,
             )
+        return self._result(PurchaseDecision.EARLY_ADOPTER, confidence,
+                            [DecisionReasonCode.NO_AFFIRMATIVE_SUPPORT], [],
+                            sufficient=False)
 
+    @staticmethod
+    def _result(decision, confidence, reasons, unresolved, *, blocking=None,
+                conditions=None, supporting=None, sufficient=False):
         return PurchaseDecisionResult(
-            decision=PurchaseDecision.EARLY_ADOPTER,
-            confidence_score=confidence.overall_score,
-            reasons=[DecisionReasonCode.NO_AFFIRMATIVE_SUPPORT],
-            evidence_sufficient=False,
-            should_find_alternatives=False,
+            decision=decision, confidence_score=confidence.overall_score,
+            reasons=reasons, blocking_issues=blocking or [],
+            conditions=conditions or [], unresolved_risks=unresolved,
+            supporting_signals=supporting or [], evidence_sufficient=sufficient,
+            should_find_alternatives=decision is PurchaseDecision.SKIP,
         )
 
-    def _insufficiency_reasons(
-        self,
-        confidence: ConfidenceResult,
-        clusters: list[ClaimCluster],
-    ) -> list[DecisionReasonCode]:
-        reasons: list[DecisionReasonCode] = []
+    @staticmethod
+    def _validate_snapshot_contract(confidence, clustering):
+        fields = ("analysis_id", "snapshot_id", "product_identity",
+                  "registry_id", "registry_revision")
+        confidence_values = tuple(getattr(confidence, field) for field in fields)
+        clustering_values = tuple(getattr(clustering, field) for field in fields)
+        if any(value is not None for value in confidence_values + clustering_values):
+            if any(value is None for value in confidence_values + clustering_values):
+                raise DecisionInputError("snapshot identity must be complete on both inputs")
+            if confidence_values != clustering_values:
+                raise DecisionInputError("confidence and clusters belong to different snapshots")
+
+    def _insufficiency_reasons(self, confidence, clusters):
+        reasons = []
         if not clusters:
             reasons.append(DecisionReasonCode.NO_MEANINGFUL_CLAIMS)
-        if (
-            confidence.overall_score < self._policy.minimum_evidence_confidence
-            or confidence.confidence_level is ConfidenceLevel.LOW
-        ):
+        if not confidence.quality_gate_passed:
+            reasons.append(DecisionReasonCode.INSUFFICIENT_EVIDENCE_QUALITY)
+        if (confidence.overall_score < self._policy.minimum_evidence_confidence
+                or confidence.confidence_level is ConfidenceLevel.LOW):
             reasons.append(DecisionReasonCode.LOW_EVIDENCE_CONFIDENCE)
         if confidence.metrics.independent_source_count < self._policy.minimum_independent_sources:
             reasons.append(DecisionReasonCode.INSUFFICIENT_INDEPENDENT_EVIDENCE)
@@ -152,120 +123,74 @@ class PurchaseDecisionEngine:
             reasons.insert(0, DecisionReasonCode.INSUFFICIENT_EVIDENCE)
         return reasons
 
-    def _is_blocking(self, cluster: ClaimCluster) -> bool:
-        severe_groups = sum(
-            severity >= self._policy.skip_min_severity
-            for severity in self._group_severities(cluster, confirmed_only=True).values()
-        )
-        return severe_groups >= self._policy.skip_min_independent_support
+    def _is_blocking(self, c):
+        return sum(v >= self._policy.skip_min_severity
+                   for v in self._group_severities(c, confirmed_only=True).values()
+                   ) >= self._policy.skip_min_independent_support
 
-    def _is_conditional(self, cluster: ClaimCluster) -> bool:
-        affected_groups = sum(
-            severity >= self._policy.buy_if_min_severity
-            for severity in self._group_severities(cluster, confirmed_only=True).values()
-        )
-        return affected_groups >= self._policy.buy_if_min_independent_support
+    def _is_conditional(self, c):
+        return sum(v >= self._policy.buy_if_min_severity
+                   for v in self._group_severities(c, confirmed_only=True).values()
+                   ) >= self._policy.buy_if_min_independent_support
 
-    def _has_unresolved_severe_risk(self, cluster: ClaimCluster) -> bool:
-        return any(
-            severity >= self._policy.skip_min_severity
-            for severity in self._group_severities(cluster).values()
-        )
+    def _has_unresolved_severe_risk(self, c):
+        return any(v >= self._policy.skip_min_severity for v in self._group_severities(c).values())
 
-    def _has_long_term_evidence(self, cluster: ClaimCluster) -> bool:
-        return any(
-            months >= self._policy.long_term_threshold_months
-            for months in cluster.usage_period_months
-        )
+    def _has_long_term_evidence(self, c):
+        return any(m >= self._policy.long_term_threshold_months for m in c.usage_period_months)
 
     @staticmethod
-    def _group_severities(
-        cluster: ClaimCluster,
-        *,
-        confirmed_only: bool = False,
-    ) -> dict[str, int]:
-        confirmed_groups = PurchaseDecisionEngine._confirmed_group_ids(cluster)
-        severities: dict[str, int] = {}
-        for member in cluster.members:
-            group_id = member.independence_group_id or member.claim.source_id
-            if confirmed_only and group_id not in confirmed_groups:
+    def _group_severities(c, *, confirmed_only=False):
+        confirmed = PurchaseDecisionEngine._confirmed_group_ids(c)
+        values = {}
+        for member in c.members:
+            group = member.independence_group_id or member.claim.source_id
+            if confirmed_only and group not in confirmed:
                 continue
-            severities[group_id] = max(
-                member.claim.severity,
-                severities.get(group_id, 0),
-            )
-        return severities
+            values[group] = max(member.claim.severity, values.get(group, 0))
+        return values
 
-    def _severity(self, cluster: ClaimCluster) -> float:
-        severities = self._group_severities(cluster)
-        return sum(severities.values()) / len(severities)
+    def _severity(self, c):
+        values = self._group_severities(c)
+        return sum(values.values()) / len(values)
 
     @staticmethod
-    def _confirmed_group_ids(cluster: ClaimCluster) -> set[str]:
-        if cluster.confirmed_independence_group_ids is not None:
-            return set(cluster.confirmed_independence_group_ids)
-        return {
-            member.independence_group_id
-            for member in cluster.members
-            if member.independence_group_id is not None
-            and member.independence_state is IndependenceState.CONFIRMED
-        }
+    def _confirmed_group_ids(c):
+        if c.confirmed_independence_group_ids is not None:
+            return set(c.confirmed_independence_group_ids)
+        return {m.independence_group_id for m in c.members
+                if m.independence_group_id is not None
+                and m.independence_state is IndependenceState.CONFIRMED}
 
-    def _conflict_aspects(self, clusters: list[ClaimCluster]) -> set[str]:
-        groups: dict[str, dict[ClaimSentiment, set[str]]] = defaultdict(
-            lambda: defaultdict(set)
-        )
-        for cluster in clusters:
-            groups[cluster.aspect][cluster.sentiment].update(
-                self._confirmed_group_ids(cluster)
-            )
+    def _conflict_aspects(self, clusters):
+        groups = defaultdict(lambda: defaultdict(set))
+        for c in clusters:
+            groups[c.aspect][c.sentiment].update(self._confirmed_group_ids(c))
         threshold = self._policy.conflict_min_independent_support
-        return {
-            aspect
-            for aspect, by_sentiment in groups.items()
-            if len(by_sentiment[ClaimSentiment.POSITIVE]) >= threshold
-            and len(by_sentiment[ClaimSentiment.NEGATIVE]) >= threshold
-        }
+        return {aspect for aspect, sentiments in groups.items()
+                if len(sentiments[ClaimSentiment.POSITIVE]) >= threshold
+                and len(sentiments[ClaimSentiment.NEGATIVE]) >= threshold}
 
-    def _positive_signals(self, clusters: list[ClaimCluster]) -> list[DecisionSignal]:
+    def _positive_signals(self, clusters):
         return self._sorted_signals(
-            self._signal(cluster, DecisionReasonCode.STRONG_POSITIVE_SUPPORT)
-            for cluster in clusters
-            if cluster.sentiment is ClaimSentiment.POSITIVE
-            and len(self._confirmed_group_ids(cluster))
-            >= self._policy.positive_min_independent_support
+            self._signal(c, DecisionReasonCode.STRONG_POSITIVE_SUPPORT)
+            for c in clusters if c.sentiment is ClaimSentiment.POSITIVE
+            and len(self._confirmed_group_ids(c)) >= self._policy.positive_min_independent_support
         )
 
-    def _signal(
-        self,
-        cluster: ClaimCluster,
-        reason_code: DecisionReasonCode,
-    ) -> DecisionSignal:
-        confirmed_severities = self._group_severities(cluster, confirmed_only=True)
+    def _signal(self, c, reason):
+        confirmed = self._group_severities(c, confirmed_only=True)
         return DecisionSignal(
-            reason_code=reason_code,
-            cluster_id=cluster.cluster_id,
-            aspect=cluster.aspect,
-            sentiment=cluster.sentiment,
-            severity=self._severity(cluster),
-            max_severity=cluster.max_severity,
-            source_count=cluster.source_count,
-            independent_source_count=len(self._confirmed_group_ids(cluster)),
+            reason_code=reason, cluster_id=c.cluster_id, aspect=c.aspect,
+            sentiment=c.sentiment, severity=self._severity(c), max_severity=c.max_severity,
+            source_count=c.source_count,
+            independent_source_count=len(self._confirmed_group_ids(c)),
             high_severity_independent_support=sum(
-                severity >= self._policy.skip_min_severity
-                for severity in confirmed_severities.values()
+                value >= self._policy.skip_min_severity for value in confirmed.values()
             ),
-            domain_count=cluster.domain_count,
-            long_term_evidence=self._has_long_term_evidence(cluster),
+            domain_count=c.domain_count, long_term_evidence=self._has_long_term_evidence(c),
         )
 
     @staticmethod
-    def _sorted_signals(signals: Iterable[DecisionSignal]) -> list[DecisionSignal]:
-        return sorted(
-            signals,
-            key=lambda signal: (
-                -signal.severity,
-                -signal.independent_source_count,
-                signal.cluster_id,
-            ),
-        )
+    def _sorted_signals(signals: Iterable[DecisionSignal]):
+        return sorted(signals, key=lambda s: (-s.severity, -s.independent_source_count, s.cluster_id))

@@ -57,7 +57,18 @@ class SemanticClaimClusterer:
         claims: Iterable[ExtractedClaim],
         sources: Iterable[FilteredSource],
     ) -> ClaimClusteringResult:
-        claim_list = list(claims)
+        claim_list = sorted(
+            claims,
+            key=lambda claim: (
+                ASPECT_ALIASES.get(claim.aspect, claim.aspect),
+                claim.sentiment.value,
+                " ".join(claim.claim.casefold().split()),
+                claim.source_id,
+                " ".join(claim.evidence_fragment.casefold().split()),
+                claim.severity,
+                claim.usage_period_months or 0,
+            ),
+        )
         if not claim_list:
             return ClaimClusteringResult()
 
@@ -85,6 +96,19 @@ class SemanticClaimClusterer:
             for cluster_index, component in enumerate(components, start=1)
         ]
         return ClaimClusteringResult(clusters=clusters)
+
+    def cluster_snapshot(self, snapshot) -> ClaimClusteringResult:
+        """Cluster only claims admitted by a validated evaluation snapshot."""
+        result = self.cluster(snapshot.verified_claims, snapshot.sources)
+        return result.model_copy(
+            update={
+                "analysis_id": snapshot.analysis_id,
+                "snapshot_id": snapshot.snapshot_id,
+                "product_identity": snapshot.product_identity,
+                "registry_id": snapshot.registry_id,
+                "registry_revision": snapshot.registry_revision,
+            }
+        )
 
     @staticmethod
     def _source_lookup(sources: Iterable[FilteredSource]) -> dict[str, FilteredSource]:

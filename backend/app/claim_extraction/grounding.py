@@ -25,7 +25,7 @@ NEGATION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 NON_EXPERIENCE_PATTERN = re.compile(
-    r"\b(?:i|we)\s+(?:have\s+)?never\s+(?:used|owned|tested)\b|"
+    r"\b(?:i|we)\s+(?:have\s+)?(?:never|not)\s+(?:used|owned|tested)\b|"
     r"(?:사용|이용|써)해?\s*본\s*적(?:이)?\s*없",
     re.IGNORECASE,
 )
@@ -47,9 +47,37 @@ NEGATIVE_SIGNAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 POSITIVE_SIGNAL_PATTERN = re.compile(
-    r"\b(?:great|good|reliable|works?|lasts?|excellent|satisfied)\b|"
+    r"\b(?:great|good|reliable|works?|worked|lasts?|excellent|satisfied)\b|"
     r"(?:좋|만족|안정|잘\s*된다)",
     re.IGNORECASE,
+)
+EVENT_PATTERNS = (
+    (
+        "fire",
+        re.compile(
+            r"\b(?:catch|catches|caught)\s+fire\b|\bfire\b|(?:발화|불이\s*났)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "failure",
+        re.compile(
+            r"\b(?:fail(?:ed|s|ure)?|broke|broken|stopped\s+working)\b|(?:고장|작동[^.!?]*(?:않|멈))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "overheat",
+        re.compile(r"\boverheat(?:ed|s|ing)?\b|(?:과열)", re.IGNORECASE),
+    ),
+    (
+        "disconnect",
+        re.compile(r"\bdisconnect(?:ed|s|ing)?\b|(?:연결[^.!?]*(?:끊|실패))", re.IGNORECASE),
+    ),
+    (
+        "drain",
+        re.compile(r"\bdrain(?:ed|s|ing)?\b|(?:배터리[^.!?]*(?:닳|소모))", re.IGNORECASE),
+    ),
 )
 ENGLISH_MONTH_PATTERNS = (
     re.compile(
@@ -80,12 +108,55 @@ KOREAN_YEAR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 STOPWORDS = frozenset(
-    {"a", "an", "and", "are", "for", "i", "is", "it", "of", "the", "this", "to", "was"}
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "for",
+        "i",
+        "is",
+        "it",
+        "my",
+        "of",
+        "our",
+        "the",
+        "this",
+        "to",
+        "was",
+        "we",
+    }
+)
+SUBJECT_STOPWORDS = STOPWORDS | frozenset(
+    {
+        "after",
+        "also",
+        "but",
+        "completely",
+        "could",
+        "did",
+        "do",
+        "does",
+        "eventually",
+        "finally",
+        "had",
+        "has",
+        "have",
+        "just",
+        "may",
+        "might",
+        "never",
+        "not",
+        "repeatedly",
+        "suddenly",
+        "will",
+        "would",
+    }
 )
 
 
 class ClaimGroundingValidator:
-    """Only VERIFIED claims may enter clustering, confidence, and decisions."""
+    """Only VERIFIED claim cores may enter clustering and decisions."""
 
     def __init__(self, target_product: ProductResolution | None = None) -> None:
         self._target_product = target_product
@@ -115,8 +186,8 @@ class ClaimGroundingValidator:
             first = assessments[0]
             raise ClaimGroundingError(first.detail, assessments)
         ordered_claims = [
-            claim
-            for _, claim in sorted(
+            grounded_claim
+            for _, grounded_claim in sorted(
                 verified,
                 key=lambda item: (source_order[item[1].source_id], item[0]),
             )
@@ -147,8 +218,12 @@ class ClaimGroundingValidator:
                 f"evidence_fragment for {claim.source_id} is not present in source text",
             )
 
-        context = self._context_for_fragment(document.text, claim.evidence_fragment)
-        identity_state = self._identity_mismatch(context)
+        claim_context, usage_context = self._contexts_for_fragment(
+            document.text, claim.evidence_fragment
+        )
+        identity_state = self._identity_mismatch(
+            claim_context, claim.claim, claim.evidence_fragment
+        )
         if identity_state is not None:
             return self._assessment(
                 claim,
@@ -156,21 +231,21 @@ class ClaimGroundingValidator:
                 GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH,
                 identity_state,
             )
-        if NON_EXPERIENCE_PATTERN.search(context):
+        if NON_EXPERIENCE_PATTERN.search(claim_context):
             return self._assessment(
                 claim,
                 GroundingState.REJECTED,
                 GroundingReasonCode.NON_EXPERIENCE,
                 f"{claim.source_id} explicitly states no direct product experience",
             )
-        if THIRD_PARTY_PATTERN.search(context):
+        if THIRD_PARTY_PATTERN.search(claim_context):
             return self._assessment(
                 claim,
                 GroundingState.UNCERTAIN,
                 GroundingReasonCode.THIRD_PARTY_REPORT,
                 f"{claim.source_id} evidence is attributed to a third party",
             )
-        if SPECULATION_PATTERN.search(context):
+        if SPECULATION_PATTERN.search(claim_context):
             return self._assessment(
                 claim,
                 GroundingState.UNCERTAIN,
@@ -179,7 +254,7 @@ class ClaimGroundingValidator:
             )
 
         claim_negated = bool(NEGATION_PATTERN.search(claim.claim))
-        context_negated = bool(NEGATION_PATTERN.search(context))
+        context_negated = bool(NEGATION_PATTERN.search(claim_context))
         if claim_negated != context_negated:
             return self._assessment(
                 claim,
@@ -197,55 +272,135 @@ class ClaimGroundingValidator:
                 f"evidence_fragment for {claim.source_id} lacks meaningful context",
             )
 
-        if self._polarity_conflicts(claim, context):
+        if not self._subject_predicate_supported(claim.claim, claim_context):
+            return self._assessment(
+                claim,
+                GroundingState.REJECTED,
+                GroundingReasonCode.SUBJECT_PREDICATE_MISMATCH,
+                f"claim subject or predicate is not supported by {claim.source_id}",
+            )
+        if self._polarity_conflicts(claim, claim_context):
             return self._assessment(
                 claim,
                 GroundingState.UNCERTAIN,
                 GroundingReasonCode.POLARITY_MISMATCH,
                 f"claim sentiment is not safely supported by {claim.source_id} context",
             )
-        if not self._claim_supported(claim.claim, context):
+        if not self._claim_supported(claim.claim, claim_context):
             return self._assessment(
                 claim,
                 GroundingState.UNCERTAIN,
                 GroundingReasonCode.CLAIM_NOT_SUPPORTED,
                 f"claim meaning is not sufficiently represented in {claim.source_id} context",
             )
-        if not self._usage_period_supported(claim, context):
-            return self._assessment(
-                claim,
-                GroundingState.REJECTED,
-                GroundingReasonCode.USAGE_PERIOD_MISMATCH,
-                f"usage_period_months for {claim.source_id} is not explicit usage duration",
-            )
+
+        grounded_claim = claim
+        metadata_issues: list[GroundingReasonCode] = []
+        if not self._usage_period_supported(claim, usage_context):
+            grounded_claim = claim.model_copy(update={"usage_period_months": None})
+            metadata_issues.append(GroundingReasonCode.USAGE_PERIOD_DROPPED)
+        detail = f"claim core is grounded in {claim.source_id}"
+        if metadata_issues:
+            detail += "; unsupported usage_period_months was removed"
         return self._assessment(
-            claim,
+            grounded_claim,
             GroundingState.VERIFIED,
             GroundingReasonCode.VERIFIED,
-            f"claim is grounded in {claim.source_id}",
+            detail,
+            metadata_issues=metadata_issues,
         )
 
-    def _identity_mismatch(self, source_text: str) -> str | None:
+    def _identity_mismatch(
+        self,
+        context: str,
+        claim_text: str,
+        fragment: str,
+    ) -> str | None:
         target = self._target_product
         if target is None or target.ambiguous or target.canonical_name is None:
             return None
-        normalized = self._normalize_for_match(source_text)
-        if target.product_name == "AirPods Pro" and target.generation:
-            mentions = set(re.findall(r"airpods\s+pro\s+([123])(?:st|nd|rd)?", normalized))
-            expected = {"1st generation": "1", "2nd generation": "2", "3rd generation": "3"}[
-                target.generation
-            ]
-            if mentions and expected not in mentions:
-                return f"source explicitly refers to another AirPods Pro generation: {sorted(mentions)}"
+        if target.product_name != "AirPods Pro" or not target.generation:
+            return None
+
+        expected = {"1st generation": "1", "2nd generation": "2", "3rd generation": "3"}[
+            target.generation
+        ]
+        generation_pattern = r"airpods\s+pro\s+([123])(?:st|nd|rd)?"
+        for label, scope in (("claim", claim_text), ("fragment", fragment), ("context", context)):
+            mentions = set(re.findall(generation_pattern, self._normalize_for_match(scope)))
+            if mentions and mentions != {expected}:
+                return (
+                    f"{label} mixes or refers to another AirPods Pro generation: "
+                    f"{sorted(mentions)}"
+                )
         return None
 
     @staticmethod
-    def _context_for_fragment(source_text: str, fragment: str) -> str:
+    def _contexts_for_fragment(source_text: str, fragment: str) -> tuple[str, str]:
+        sentences = [
+            sentence.strip()
+            for sentence in SENTENCE_SPLIT_PATTERN.split(source_text)
+            if sentence.strip()
+        ]
+        if not sentences:
+            return source_text, source_text
         normalized_fragment = ClaimGroundingValidator._normalize_for_match(fragment)
-        for sentence in SENTENCE_SPLIT_PATTERN.split(source_text):
+        matching_index: int | None = None
+        for index, sentence in enumerate(sentences):
             if normalized_fragment in ClaimGroundingValidator._normalize_for_match(sentence):
-                return sentence.strip()
-        return source_text
+                matching_index = index
+                break
+        if matching_index is None:
+            if normalized_fragment in ClaimGroundingValidator._normalize_for_match(source_text):
+                return fragment, fragment
+            fragment_tokens = ClaimGroundingValidator._content_tokens(fragment)
+            matching_index = max(
+                range(len(sentences)),
+                key=lambda index: len(
+                    fragment_tokens
+                    & ClaimGroundingValidator._content_tokens(sentences[index])
+                ),
+            )
+        claim_context = sentences[matching_index]
+        start = max(0, matching_index - 1)
+        usage_context = " ".join(sentences[start : matching_index + 1])
+        return claim_context, usage_context
+
+    @classmethod
+    def _subject_predicate_supported(cls, claim_text: str, context: str) -> bool:
+        claim_events = cls._event_signatures(claim_text)
+        if not claim_events:
+            return True
+        context_events = cls._event_signatures(context)
+        for predicate, subject in claim_events:
+            candidates = [
+                context_subject
+                for context_predicate, context_subject in context_events
+                if context_predicate == predicate
+            ]
+            if not candidates:
+                return False
+            if subject is not None and subject not in candidates:
+                return False
+        return True
+
+    @classmethod
+    def _event_signatures(cls, text: str) -> list[tuple[str, str | None]]:
+        signatures: list[tuple[str, str | None]] = []
+        for predicate, pattern in EVENT_PATTERNS:
+            for match in pattern.finditer(text):
+                signatures.append((predicate, cls._subject_before(text, match.start())))
+        return signatures
+
+    @staticmethod
+    def _subject_before(text: str, predicate_start: int) -> str | None:
+        prefix = text[:predicate_start]
+        tokens = [token.casefold() for token in WORD_PATTERN.findall(prefix)]
+        for token in reversed(tokens):
+            normalized = re.sub(r"(?:이|가|은|는|을|를)$", "", token)
+            if normalized and normalized not in SUBJECT_STOPWORDS:
+                return normalized
+        return None
 
     @staticmethod
     def _content_tokens(text: str) -> set[str]:
@@ -261,21 +416,53 @@ class ClaimGroundingValidator:
         normalized_context = cls._normalize_for_match(context)
         if normalized_claim in normalized_context:
             return True
-        claim_tokens = cls._content_tokens(claim_text)
-        context_tokens = cls._content_tokens(context)
+        claim_tokens = [
+            token
+            for token in WORD_PATTERN.findall(claim_text.casefold())
+            if token not in STOPWORDS
+        ]
+        context_tokens = [
+            token
+            for token in WORD_PATTERN.findall(context.casefold())
+            if token not in STOPWORDS
+        ]
         if not claim_tokens:
             return False
-        return len(claim_tokens & context_tokens) / len(claim_tokens) >= 0.60
+        overlap = len(set(claim_tokens) & set(context_tokens)) / len(set(claim_tokens))
+        if overlap < 0.60:
+            return False
+        position = 0
+        matched = 0
+        for token in claim_tokens:
+            try:
+                position = context_tokens.index(token, position) + 1
+            except ValueError:
+                continue
+            matched += 1
+        return matched / len(claim_tokens) >= 0.60
 
     @staticmethod
     def _polarity_conflicts(claim: ExtractedClaim, context: str) -> bool:
-        has_negative = bool(NEGATIVE_SIGNAL_PATTERN.search(context))
+        negative_matches = list(NEGATIVE_SIGNAL_PATTERN.finditer(context))
+        unnegated_negative = any(
+            not ClaimGroundingValidator._negated_at(context, match.start())
+            for match in negative_matches
+        )
+        negated_negative = any(
+            ClaimGroundingValidator._negated_at(context, match.start())
+            for match in negative_matches
+        )
         has_positive = bool(POSITIVE_SIGNAL_PATTERN.search(context))
         if claim.sentiment is ClaimSentiment.POSITIVE:
-            return has_negative
+            return unnegated_negative
         if claim.sentiment is ClaimSentiment.NEGATIVE:
-            return has_positive and not has_negative
+            return has_positive or (negated_negative and not unnegated_negative)
         return False
+
+    @staticmethod
+    def _negated_at(text: str, position: int) -> bool:
+        prefix = text[max(0, position - 40) : position]
+        return bool(NEGATION_PATTERN.search(prefix))
 
     @staticmethod
     def _usage_period_supported(claim: ExtractedClaim, context: str) -> bool:
@@ -283,9 +470,13 @@ class ClaimGroundingValidator:
             return True
         explicit_months: set[int] = set()
         for pattern in ENGLISH_MONTH_PATTERNS:
-            explicit_months.update(int(value) for value in pattern.findall(context))
+            for match in pattern.finditer(context):
+                if not ClaimGroundingValidator._negated_at(context, match.start()):
+                    explicit_months.add(int(match.group(1)))
         for pattern in ENGLISH_YEAR_PATTERNS:
-            explicit_months.update(12 * int(value) for value in pattern.findall(context))
+            for match in pattern.finditer(context):
+                if not ClaimGroundingValidator._negated_at(context, match.start()):
+                    explicit_months.add(12 * int(match.group(1)))
         explicit_months.update(int(value) for value in KOREAN_MONTH_PATTERN.findall(context))
         explicit_months.update(12 * int(value) for value in KOREAN_YEAR_PATTERN.findall(context))
         return claim.usage_period_months in explicit_months
@@ -296,12 +487,15 @@ class ClaimGroundingValidator:
         state: GroundingState,
         reason_code: GroundingReasonCode,
         detail: str,
+        *,
+        metadata_issues: list[GroundingReasonCode] | None = None,
     ) -> GroundingAssessment:
         return GroundingAssessment(
             claim=claim,
             state=state,
             reason_code=reason_code,
             detail=detail,
+            metadata_issues=metadata_issues or [],
         )
 
     @staticmethod
