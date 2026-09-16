@@ -19,9 +19,12 @@ FIRST_IMPRESSION_PATTERN = re.compile(
     r"(?:첫날|첫\s*인상)", re.I
 )
 ESTABLISHED_PATTERN = re.compile(
-    r"\b(?:for|after)\s+\d+\s+(?:weeks?|months?|years?)\b|"
-    r"\b\d+\s+(?:weeks?|months?|years?)\s+(?:of\s+)?(?:use|ownership)\b|"
-    r"(?:\d+\s*(?:주|개월|년)(?:간|째)?)", re.I
+    r"\b(?:i|we)\s+(?:have\s+)?(?:used|owned|tested|had)\b[^.!?]{0,80}"
+    r"\bfor\s+\d+\s+(?:weeks?|months?|years?)\b|"
+    r"\bafter\s+\d+\s+(?:weeks?|months?|years?)\s+(?:of\s+)?"
+    r"(?:use|usage|ownership|testing)\b|"
+    r"\b\d+\s+(?:weeks?|months?|years?)\s+(?:of\s+)?(?:use|usage|ownership)\b|"
+    r"(?:\d+\s*(?:주|개월|년)(?:간|째)?\s*(?:사용|이용|써|썼))", re.I
 )
 
 

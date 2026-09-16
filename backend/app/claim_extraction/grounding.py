@@ -272,7 +272,9 @@ class ClaimGroundingValidator:
                 f"evidence_fragment for {claim.source_id} lacks meaningful context",
             )
 
-        if not self._subject_predicate_supported(claim.claim, claim_context):
+        if not self._subject_predicate_supported(
+            claim.claim, claim_context, usage_context
+        ):
             return self._assessment(
                 claim,
                 GroundingState.REJECTED,
@@ -367,11 +369,19 @@ class ClaimGroundingValidator:
         return claim_context, usage_context
 
     @classmethod
-    def _subject_predicate_supported(cls, claim_text: str, context: str) -> bool:
+    def _subject_predicate_supported(
+        cls,
+        claim_text: str,
+        context: str,
+        antecedent_context: str,
+    ) -> bool:
         claim_events = cls._event_signatures(claim_text)
         if not claim_events:
             return True
-        context_events = cls._event_signatures(context)
+        context_events = cls._event_signatures(
+            context,
+            antecedent_context=antecedent_context,
+        )
         for predicate, subject in claim_events:
             candidates = [
                 context_subject
@@ -380,27 +390,130 @@ class ClaimGroundingValidator:
             ]
             if not candidates:
                 return False
-            if subject is not None and subject not in candidates:
+            if subject == "__pronoun__":
+                if not any(
+                    candidate not in {None, "__pronoun__"} for candidate in candidates
+                ):
+                    return False
+            elif subject is not None and subject not in candidates:
                 return False
         return True
 
     @classmethod
-    def _event_signatures(cls, text: str) -> list[tuple[str, str | None]]:
+    def _event_signatures(
+        cls,
+        text: str,
+        *,
+        antecedent_context: str | None = None,
+    ) -> list[tuple[str, str | None]]:
         signatures: list[tuple[str, str | None]] = []
         for predicate, pattern in EVENT_PATTERNS:
             for match in pattern.finditer(text):
-                signatures.append((predicate, cls._subject_before(text, match.start())))
+                signatures.append(
+                    (
+                        predicate,
+                        cls._subject_before(
+                            text,
+                            match.start(),
+                            antecedent_context=antecedent_context,
+                        ),
+                    )
+                )
         return signatures
 
-    @staticmethod
-    def _subject_before(text: str, predicate_start: int) -> str | None:
+    @classmethod
+    def _subject_before(
+        cls,
+        text: str,
+        predicate_start: int,
+        *,
+        antecedent_context: str | None = None,
+    ) -> str | None:
         prefix = text[:predicate_start]
-        tokens = [token.casefold() for token in WORD_PATTERN.findall(prefix)]
-        for token in reversed(tokens):
+        korean_subjects = re.findall(r"([가-힣]+?)(?:이|가)\s*$", prefix)
+        if korean_subjects:
+            return korean_subjects[-1]
+        clauses = re.split(
+            r"[.!?;,:]\s*|\b(?:and|but|then|while)\b",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        clause = next(
+            (part for part in reversed(clauses) if part.strip()),
+            prefix,
+        )
+        tokens = [token.casefold() for token in WORD_PATTERN.findall(clause)]
+        time_words = {
+            "one", "two", "three", "four", "five", "six", "seven",
+            "eight", "nine", "ten", "eleven", "twelve",
+            "day", "days", "week", "weeks", "month", "months",
+            "year", "years",
+        }
+        for token in tokens:
             normalized = re.sub(r"(?:이|가|은|는|을|를)$", "", token)
-            if normalized and normalized not in SUBJECT_STOPWORDS:
-                return normalized
+            if token in {"it", "this", "that"}:
+                resolved = cls._resolve_pronoun_antecedent(
+                    antecedent_context,
+                    current_sentence=text,
+                )
+                return resolved or "__pronoun__"
+            if (
+                not normalized
+                or normalized in SUBJECT_STOPWORDS
+                or normalized in time_words
+                or normalized.isdigit()
+            ):
+                continue
+            return normalized
         return None
+
+    @staticmethod
+    def _resolve_pronoun_antecedent(
+        antecedent_context: str | None,
+        *,
+        current_sentence: str,
+    ) -> str | None:
+        if not antecedent_context:
+            return None
+        sentences = [
+            sentence.strip()
+            for sentence in SENTENCE_SPLIT_PATTERN.split(antecedent_context)
+            if sentence.strip()
+        ]
+        normalized_current = ClaimGroundingValidator._normalize_for_match(
+            current_sentence
+        )
+        previous: list[str] = []
+        for sentence in sentences:
+            if (
+                ClaimGroundingValidator._normalize_for_match(sentence)
+                == normalized_current
+            ):
+                break
+            previous.append(sentence)
+        if not previous and len(sentences) > 1:
+            previous = sentences[:-1]
+        if not previous:
+            return None
+        nearest = previous[-1]
+        candidates = {
+            match.casefold()
+            for match in re.findall(
+                r"\b(?:the|this|that)\s+([a-z][a-z0-9_-]*)\b",
+                nearest,
+                flags=re.IGNORECASE,
+            )
+            if match.casefold() not in {"it", "this", "that"}
+        }
+        if not candidates:
+            tokens = [
+                token.casefold()
+                for token in WORD_PATTERN.findall(nearest)
+                if token.casefold() not in SUBJECT_STOPWORDS
+            ]
+            if tokens:
+                candidates.add(tokens[0])
+        return next(iter(candidates)) if len(candidates) == 1 else None
 
     @staticmethod
     def _content_tokens(text: str) -> set[str]:

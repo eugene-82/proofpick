@@ -233,7 +233,7 @@ def test_same_domain_distinct_posts_remain_distinct() -> None:
     assert len(result.accepted_sources) == 2
 
 
-def test_substantive_raw_search_path_can_confirm_independence() -> None:
+def test_substantive_raw_search_path_stays_unknown_without_provenance() -> None:
     filtered = DeterministicSourceFilter().filter(
         [candidate("https://unknown.example/review", "A sufficiently detailed product review.", independence=IndependenceState.UNKNOWN)]
     ).accepted_sources[0]
@@ -242,8 +242,9 @@ def test_substantive_raw_search_path_can_confirm_independence() -> None:
     clustering = SemanticClaimClusterer(provider).cluster([extracted], [filtered])
     result = EvidenceConfidenceEngine().evaluate(clustering, [filtered])
 
-    assert clustering.clusters[0].independent_source_count == 1
-    assert result.metrics.independent_source_count == 1
+    assert filtered.independence_state is IndependenceState.UNKNOWN
+    assert clustering.clusters[0].independent_source_count == 0
+    assert result.metrics.independent_source_count == 0
 
 
 def test_same_url_later_richer_result_enriches_stable_representative() -> None:

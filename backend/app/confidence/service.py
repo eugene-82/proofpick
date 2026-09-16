@@ -145,9 +145,18 @@ class EvidenceConfidenceEngine:
             if cluster.aspect in durability_aspects
             and cluster.sentiment is ClaimSentiment.POSITIVE
         ]
-        if durability_clusters and sources and all(
-            source.observation_state is ObservationState.FIRST_IMPRESSION
-            for source in sources
+        durability_source_ids = {
+            source_id
+            for cluster in durability_clusters
+            for source_id in cluster.source_ids
+        }
+        durability_sources = [
+            source for source in sources
+            if source.source_id in durability_source_ids
+        ]
+        if durability_clusters and not any(
+            source.observation_state is ObservationState.ESTABLISHED
+            for source in durability_sources
         ):
             issues.append(ConfidenceQualityIssue.INSUFFICIENT_DURABILITY_OBSERVATION)
         return issues

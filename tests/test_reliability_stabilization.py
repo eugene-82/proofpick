@@ -163,7 +163,7 @@ def test_usage_metadata_failure_does_not_discard_claim_core() -> None:
     assert assessments[0].metadata_issues == [GroundingReasonCode.USAGE_PERIOD_DROPPED]
 
 
-def test_search_result_independence_has_deterministic_resolution_path() -> None:
+def test_search_result_without_provenance_stays_unknown() -> None:
     result = DeterministicSourceFilter().filter([
         SearchResult(
             url="https://review.example/item", title="Review",
@@ -171,9 +171,9 @@ def test_search_result_independence_has_deterministic_resolution_path() -> None:
         )
     ])
     source = result.accepted_sources[0]
-    assert source.independence_state is IndependenceState.CONFIRMED
+    assert source.independence_state is IndependenceState.UNKNOWN
     assert source.independence_reason_codes == [
-        IndependenceReasonCode.DISTINCT_SUBSTANTIVE_CONTENT
+        IndependenceReasonCode.INSUFFICIENT_CONTENT
     ]
 
 
@@ -289,7 +289,10 @@ def test_snippet_only_mass_and_first_impression_durability_are_gated() -> None:
 
 
 def test_full_verified_support_can_pass_quality_gate() -> None:
-    result, clustered = _confidence_case(quality=EvidenceQuality.FULL_CONTENT)
+    result, clustered = _confidence_case(
+        quality=EvidenceQuality.FULL_CONTENT,
+        observation=ObservationState.ESTABLISHED,
+    )
     assert result.quality_gate_passed
     assert PurchaseDecisionEngine().evaluate(result, clustered).decision is PurchaseDecision.BUY
 

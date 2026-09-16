@@ -24,6 +24,7 @@ NEGATION_PATTERN = re.compile(
     r"(?:아니|않|없)", re.I
 )
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|\n+")
+SIGNAL_PATTERNS = (NEGATION_PATTERN, RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTERN)
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class CompressionResult:
 
 
 class EvidenceCompressor:
-    """Use available budget across regions while retaining both risk and counter-evidence."""
+    """Use the budget across regions without changing evidence polarity."""
 
     def __init__(self, policy: EvidenceBudgetPolicy) -> None:
         self._policy = policy
@@ -42,7 +43,11 @@ class EvidenceCompressor:
         limit = self._policy.max_chars_per_source
         if len(text) <= limit:
             return CompressionResult(text=text, truncated=False)
-        units = [part.strip() for part in SENTENCE_SPLIT_PATTERN.split(text) if part.strip()]
+        units = [
+            part.strip()
+            for part in SENTENCE_SPLIT_PATTERN.split(text)
+            if part.strip()
+        ]
         if len(units) <= 1:
             return CompressionResult(self._bounded_single_unit(text, limit), True)
 
@@ -50,73 +55,104 @@ class EvidenceCompressor:
         for pattern in (RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTERN, NEGATION_PATTERN):
             matches = [index for index, unit in enumerate(units) if pattern.search(unit)]
             if matches:
-                mandatory.add(matches[0])
-                mandatory.add(matches[-1])
+                mandatory.update((matches[0], matches[-1]))
 
         ordered_mandatory = sorted(mandatory)
+        separator_budget = max(0, len(ordered_mandatory) - 1)
         mandatory_length = sum(len(units[index]) for index in ordered_mandatory)
-        mandatory_length += max(0, len(ordered_mandatory) - 1)
-        if mandatory_length > limit:
-            quota = max(1, (limit - max(0, len(ordered_mandatory) - 1)) // len(ordered_mandatory))
-            sections = []
-            for index in ordered_mandatory:
-                unit = units[index]
-                signal = next(
-                    (
-                        match
-                        for pattern in (RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTERN, NEGATION_PATTERN)
-                        if (match := pattern.search(unit)) is not None
-                    ),
-                    None,
-                )
-                if index == len(units) - 1 or (signal and signal.start() > len(unit) // 2):
-                    sections.append(self._safe_suffix(unit, quota))
-                else:
-                    sections.append(self._safe_prefix(unit, quota))
-            return CompressionResult(" ".join(sections)[:limit].rstrip(), True)
+        if mandatory_length + separator_budget > limit:
+            quotas = self._quotas(limit - separator_budget, len(ordered_mandatory))
+            sections = [
+                self._excerpt_unit(units[index], quota)
+                for index, quota in zip(ordered_mandatory, quotas, strict=True)
+            ]
+            return CompressionResult(" ".join(sections).rstrip(), True)
 
-        selected: set[int] = set()
-        used = 0
-        separator = 1
-        for index in ordered_mandatory:
-            unit = units[index]
-            needed = len(unit) + (separator if selected else 0)
-            selected.add(index)
-            used += needed
-
-        # Fill all remaining space in document order. This redistributes budget left
-        # unused by short mandatory regions instead of imposing equal section quotas.
+        selected = set(ordered_mandatory)
+        used = mandatory_length + separator_budget
         for index, unit in enumerate(units):
             if index in selected:
                 continue
-            needed = len(unit) + (separator if selected else 0)
+            needed = len(unit) + 1
             if used + needed <= limit:
                 selected.add(index)
                 used += needed
-
-        if not selected:
-            return CompressionResult(self._bounded_single_unit(text, limit), True)
         result = " ".join(units[index] for index in sorted(selected))
-        if len(result) < min(limit // 2, len(text)) and len(units) > 1:
-            result = self._prefix_suffix(text, limit)
-        return CompressionResult(result[:limit].rstrip(), True)
+        return CompressionResult(result.rstrip(), True)
+
+    @staticmethod
+    def _quotas(total: int, count: int) -> list[int]:
+        base, remainder = divmod(max(total, count), count)
+        return [base + (1 if index < remainder else 0) for index in range(count)]
+
+    @staticmethod
+    def _excerpt_unit(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        matches = [
+            match for pattern in SIGNAL_PATTERNS
+            if (match := pattern.search(text)) is not None
+        ]
+        if not matches:
+            return EvidenceCompressor._safe_prefix(text, limit)
+        signal = min(matches, key=lambda match: match.start())
+        start = signal.start()
+        end = signal.end()
+        is_negation = NEGATION_PATTERN.fullmatch(signal.group()) is not None
+        # A negator and its predicate are an atomic proposition.  Prefer that
+        # complete phrase over surrounding prose when a quota is tight.
+        if is_negation:
+            auxiliary = re.search(
+                r"\b(?:did|does|do|is|was|were|are|has|have|had)\s+$",
+                text[:start],
+                re.I,
+            )
+            if auxiliary:
+                start = auxiliary.start()
+            following = re.match(r"\s+[\w'’-]+", text[end:])
+            if following:
+                end += following.end()
+        else:
+            preceding = text[max(0, start - 40):start]
+            negations = list(NEGATION_PATTERN.finditer(preceding))
+            if negations:
+                start = max(0, start - 40) + negations[-1].start()
+            else:
+                preceding_words = list(re.finditer(r"\S+", text[:start]))
+                if preceding_words:
+                    start = preceding_words[max(0, len(preceding_words) - 2)].start()
+        available = max(0, limit - 2)
+        atomic_end = end
+        if end - start < available:
+            end = min(len(text), start + available)
+        excerpt = text[start:end].strip()
+        boundary = excerpt.rfind(" ")
+        if (
+            end < len(text)
+            and boundary > max(0, len(excerpt) // 2)
+            and start + boundary >= atomic_end
+        ):
+            excerpt = excerpt[:boundary]
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(text) else ""
+        result = prefix + excerpt + suffix
+        return result[:limit]
 
     @staticmethod
     def _bounded_single_unit(text: str, limit: int) -> str:
-        has_early_positive = (
-            (match := POSITIVE_PATTERN.search(text)) is not None and match.start() < len(text) // 2
-        )
-        has_late_risk = (
-            (match := RISK_PATTERN.search(text)) is not None and match.start() >= len(text) // 2
-        )
-        if has_early_positive and has_late_risk:
+        positive = list(POSITIVE_PATTERN.finditer(text))
+        risks = list(RISK_PATTERN.finditer(text))
+        if positive and risks and positive[0].start() < len(text) // 2 <= risks[-1].start():
             return EvidenceCompressor._prefix_suffix(text, limit)
         matches = [
-            match for pattern in (RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTERN, NEGATION_PATTERN)
-            if (match := pattern.search(text)) is not None
+            match
+            for pattern in SIGNAL_PATTERNS
+            for match in pattern.finditer(text)
         ]
-        if matches and min(match.start() for match in matches) > len(text) // 2:
-            return EvidenceCompressor._safe_suffix(text, limit)
+        if matches:
+            important = max(matches, key=lambda match: match.start())
+            if important.start() > len(text) // 2:
+                return EvidenceCompressor._signal_suffix(text, important.start(), limit)
         return EvidenceCompressor._safe_prefix(text, limit)
 
     @staticmethod
@@ -125,9 +161,23 @@ class EvidenceCompressor:
             return "…"[:limit]
         left_budget = (limit - 1) // 2
         right_budget = limit - 1 - left_budget
-        left = EvidenceCompressor._safe_prefix(text, left_budget)
-        right = EvidenceCompressor._safe_suffix(text, right_budget)
-        return (left.rstrip("… ") + "…" + right.lstrip("… "))[:limit]
+        left = EvidenceCompressor._safe_prefix(text, left_budget).rstrip("… ")
+        right = EvidenceCompressor._safe_suffix(text, right_budget).lstrip("… ")
+        return left + "…" + right
+
+    @staticmethod
+    def _signal_suffix(text: str, signal_start: int, limit: int) -> str:
+        preceding = text[max(0, signal_start - 40):signal_start]
+        negations = list(NEGATION_PATTERN.finditer(preceding))
+        if negations:
+            start = max(0, signal_start - 40) + negations[-1].start()
+        else:
+            preceding_words = list(re.finditer(r"\S+", text[:signal_start]))
+            start = (
+                preceding_words[max(0, len(preceding_words) - 2)].start()
+                if preceding_words else signal_start
+            )
+        return EvidenceCompressor._safe_prefix("…" + text[start:].lstrip(), limit)
 
     @staticmethod
     def _safe_prefix(text: str, limit: int) -> str:
@@ -148,8 +198,12 @@ class EvidenceCompressor:
         if limit <= 1:
             return "…"[:limit]
         start = len(text) - (limit - 1)
-        sentence_start = max(text.rfind(".", 0, start), text.rfind("!", 0, start),
-                             text.rfind("?", 0, start), text.rfind("\n", 0, start)) + 1
+        sentence_start = max(
+            text.rfind(".", 0, start),
+            text.rfind("!", 0, start),
+            text.rfind("?", 0, start),
+            text.rfind("\n", 0, start),
+        ) + 1
         preceding = text[sentence_start:start]
         negations = list(NEGATION_PATTERN.finditer(preceding))
         if negations:
@@ -158,4 +212,7 @@ class EvidenceCompressor:
             boundary = text.find(" ", start)
             if boundary != -1:
                 start = boundary + 1
-        return f"…{text[start:].lstrip()}"[-limit:]
+        suffix = text[start:].lstrip()
+        if len(suffix) > limit - 1:
+            suffix = EvidenceCompressor._safe_prefix(suffix, limit - 1).rstrip("…")
+        return "…" + suffix

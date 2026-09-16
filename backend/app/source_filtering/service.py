@@ -53,18 +53,22 @@ class DeterministicSourceFilter(SourceFilter):
             deduplicator = self._registry.deduplicator
             duplicate = deduplicator.find_duplicate(normalized_url, content_hash, dependency_text)
             if duplicate is not None and duplicate.drop:
+                representative_key = duplicate.representative_key
+                independence_group_id = duplicate.independence_group_id
                 if duplicate.reason is DropReason.DUPLICATE_URL and duplicate.can_enrich:
-                    deduplicator.enrich(
-                        duplicate.representative_key, source,
+                    representative = deduplicator.enrich(
+                        representative_key, source,
                         self._normalizer.dependency_text,
                         self._normalizer.content_fingerprint,
                     )
-                deduplicator.remember_alias(normalized_url, duplicate.representative_key)
+                    representative_key = representative.source_key
+                    independence_group_id = representative.independence_group_id
+                deduplicator.remember_alias(normalized_url, representative_key)
                 self._registry.record_reconciliation()
                 dropped.append(DroppedSource(
                     source_key=source_key, original_url=original_url, reason=duplicate.reason,
-                    duplicate_of=duplicate.representative_key,
-                    independence_group_id=duplicate.independence_group_id,
+                    duplicate_of=representative_key,
+                    independence_group_id=independence_group_id,
                     independence_state=IndependenceState.DEPENDENT,
                 ))
                 continue
@@ -81,7 +85,7 @@ class DeterministicSourceFilter(SourceFilter):
             )
             accepted.append(accepted_source)
             deduplicator.remember(accepted_source, dependency_text)
-            self._registry.record_source(source_key)
+            self._registry.record_source(source_key, accepted_source.independence_group_id)
         return SourceFilterResult(accepted_sources=accepted, dropped_sources=dropped)
 
     @staticmethod
@@ -92,8 +96,6 @@ class DeterministicSourceFilter(SourceFilter):
             return IndependenceState.DEPENDENT, [IndependenceReasonCode.DUPLICATE]
         if duplicate is not None and not duplicate.drop:
             return IndependenceState.UNKNOWN, [IndependenceReasonCode.POSSIBLE_NEAR_DUPLICATE]
-        if source.raw_content and dependency_text and len(dependency_text.split()) >= 5:
-            return IndependenceState.CONFIRMED, [IndependenceReasonCode.DISTINCT_SUBSTANTIVE_CONTENT]
         return IndependenceState.UNKNOWN, [IndependenceReasonCode.INSUFFICIENT_CONTENT]
 
     @staticmethod
