@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from app.evidence_processing.models import EvidenceDocument
 from app.models import ClaimSentiment
 from app.product_resolution.models import ProductResolution
+from app.reliability import extract_relations, relation_supported
 
 from .exceptions import ClaimGroundingError
 from .models import (
@@ -208,8 +209,16 @@ class ClaimGroundingValidator:
                 f"claim references source_id {claim.source_id} outside its batch",
             )
 
+        if not document.grounding_eligible:
+            return self._assessment(
+                claim,
+                GroundingState.REJECTED,
+                GroundingReasonCode.UNSAFE_PARTIAL_EVIDENCE,
+                f"{claim.source_id} contains only incomplete diagnostic spans",
+            )
+        decision_text = document.grounding_text or document.text
         fragment = self._normalize_for_match(claim.evidence_fragment)
-        source_text = self._normalize_for_match(document.text)
+        source_text = self._normalize_for_match(decision_text)
         if fragment not in source_text:
             return self._assessment(
                 claim,
@@ -219,7 +228,7 @@ class ClaimGroundingValidator:
             )
 
         claim_context, usage_context = self._contexts_for_fragment(
-            document.text, claim.evidence_fragment
+            decision_text, claim.evidence_fragment
         )
         identity_state = self._identity_mismatch(
             claim_context, claim.claim, claim.evidence_fragment
@@ -253,15 +262,16 @@ class ClaimGroundingValidator:
                 f"{claim.source_id} evidence is explicitly speculative",
             )
 
-        claim_negated = bool(NEGATION_PATTERN.search(claim.claim))
-        context_negated = bool(NEGATION_PATTERN.search(claim_context))
-        if claim_negated != context_negated:
-            return self._assessment(
-                claim,
-                GroundingState.REJECTED,
-                GroundingReasonCode.NEGATION_MISMATCH,
-                f"claim polarity reverses negation in {claim.source_id}",
-            )
+        if not extract_relations(claim.claim):
+            claim_negated = bool(NEGATION_PATTERN.search(claim.claim))
+            context_negated = bool(NEGATION_PATTERN.search(claim_context))
+            if claim_negated != context_negated:
+                return self._assessment(
+                    claim,
+                    GroundingState.REJECTED,
+                    GroundingReasonCode.NEGATION_MISMATCH,
+                    f"claim polarity reverses negation in {claim.source_id}",
+                )
 
         fragment_tokens = self._content_tokens(claim.evidence_fragment)
         if len(fragment_tokens) < 2:
@@ -368,153 +378,17 @@ class ClaimGroundingValidator:
         usage_context = " ".join(sentences[start : matching_index + 1])
         return claim_context, usage_context
 
-    @classmethod
+    @staticmethod
     def _subject_predicate_supported(
-        cls,
         claim_text: str,
         context: str,
         antecedent_context: str,
     ) -> bool:
-        claim_events = cls._event_signatures(claim_text)
-        if not claim_events:
-            return True
-        context_events = cls._event_signatures(
+        return relation_supported(
+            claim_text,
             context,
-            antecedent_context=antecedent_context,
+            antecedent=antecedent_context,
         )
-        for predicate, subject in claim_events:
-            candidates = [
-                context_subject
-                for context_predicate, context_subject in context_events
-                if context_predicate == predicate
-            ]
-            if not candidates:
-                return False
-            if subject == "__pronoun__":
-                if not any(
-                    candidate not in {None, "__pronoun__"} for candidate in candidates
-                ):
-                    return False
-            elif subject is not None and subject not in candidates:
-                return False
-        return True
-
-    @classmethod
-    def _event_signatures(
-        cls,
-        text: str,
-        *,
-        antecedent_context: str | None = None,
-    ) -> list[tuple[str, str | None]]:
-        signatures: list[tuple[str, str | None]] = []
-        for predicate, pattern in EVENT_PATTERNS:
-            for match in pattern.finditer(text):
-                signatures.append(
-                    (
-                        predicate,
-                        cls._subject_before(
-                            text,
-                            match.start(),
-                            antecedent_context=antecedent_context,
-                        ),
-                    )
-                )
-        return signatures
-
-    @classmethod
-    def _subject_before(
-        cls,
-        text: str,
-        predicate_start: int,
-        *,
-        antecedent_context: str | None = None,
-    ) -> str | None:
-        prefix = text[:predicate_start]
-        korean_subjects = re.findall(r"([가-힣]+?)(?:이|가)\s*$", prefix)
-        if korean_subjects:
-            return korean_subjects[-1]
-        clauses = re.split(
-            r"[.!?;,:]\s*|\b(?:and|but|then|while)\b",
-            prefix,
-            flags=re.IGNORECASE,
-        )
-        clause = next(
-            (part for part in reversed(clauses) if part.strip()),
-            prefix,
-        )
-        tokens = [token.casefold() for token in WORD_PATTERN.findall(clause)]
-        time_words = {
-            "one", "two", "three", "four", "five", "six", "seven",
-            "eight", "nine", "ten", "eleven", "twelve",
-            "day", "days", "week", "weeks", "month", "months",
-            "year", "years",
-        }
-        for token in tokens:
-            normalized = re.sub(r"(?:이|가|은|는|을|를)$", "", token)
-            if token in {"it", "this", "that"}:
-                resolved = cls._resolve_pronoun_antecedent(
-                    antecedent_context,
-                    current_sentence=text,
-                )
-                return resolved or "__pronoun__"
-            if (
-                not normalized
-                or normalized in SUBJECT_STOPWORDS
-                or normalized in time_words
-                or normalized.isdigit()
-            ):
-                continue
-            return normalized
-        return None
-
-    @staticmethod
-    def _resolve_pronoun_antecedent(
-        antecedent_context: str | None,
-        *,
-        current_sentence: str,
-    ) -> str | None:
-        if not antecedent_context:
-            return None
-        sentences = [
-            sentence.strip()
-            for sentence in SENTENCE_SPLIT_PATTERN.split(antecedent_context)
-            if sentence.strip()
-        ]
-        normalized_current = ClaimGroundingValidator._normalize_for_match(
-            current_sentence
-        )
-        previous: list[str] = []
-        for sentence in sentences:
-            if (
-                ClaimGroundingValidator._normalize_for_match(sentence)
-                == normalized_current
-            ):
-                break
-            previous.append(sentence)
-        if not previous and len(sentences) > 1:
-            previous = sentences[:-1]
-        if not previous:
-            return None
-        nearest = previous[-1]
-        candidates = {
-            match.casefold()
-            for match in re.findall(
-                r"\b(?:the|this|that)\s+([a-z][a-z0-9_-]*)\b",
-                nearest,
-                flags=re.IGNORECASE,
-            )
-            if match.casefold() not in {"it", "this", "that"}
-        }
-        if not candidates:
-            tokens = [
-                token.casefold()
-                for token in WORD_PATTERN.findall(nearest)
-                if token.casefold() not in SUBJECT_STOPWORDS
-            ]
-            if tokens:
-                candidates.add(tokens[0])
-        return next(iter(candidates)) if len(candidates) == 1 else None
-
     @staticmethod
     def _content_tokens(text: str) -> set[str]:
         return {

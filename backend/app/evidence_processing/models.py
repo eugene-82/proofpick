@@ -46,3 +46,5 @@ class EvidenceDocument(BaseModel):
     evidence_quality: EvidenceQuality = EvidenceQuality.UNKNOWN
     observation_state: ObservationState = ObservationState.UNKNOWN
     content_coverage_ratio: float = Field(default=0, ge=0, le=1)
+    grounding_text: str | None = None
+    grounding_eligible: bool = True

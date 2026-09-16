@@ -73,6 +73,14 @@ class SourceNormalizer:
         return sha256(normalized_content.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def copy_text(content: str | None) -> str | None:
+        """Return visible text while retaining sentence boundaries for copy checks."""
+        if content is None:
+            return None
+        visible = HTML_TAG_PATTERN.sub(" ", html.unescape(content))
+        normalized = " ".join(visible.split())
+        return normalized or None
+    @staticmethod
     def dependency_text(content: str | None) -> str | None:
         """Return visible word content for explainable copy comparison."""
         if content is None:

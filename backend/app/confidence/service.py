@@ -133,7 +133,7 @@ class EvidenceConfidenceEngine:
             issues.append(ConfidenceQualityIssue.SNIPPET_ONLY_COVERAGE)
         if sum(source.verified_claim_count for source in sources) == 0:
             issues.append(ConfidenceQualityIssue.NO_VERIFIED_CLAIM_COVERAGE)
-        if sources and all(
+        if sources and any(
             source.evidence_quality is EvidenceQuality.UNKNOWN for source in sources
         ):
             issues.append(ConfidenceQualityIssue.UNKNOWN_SOURCE_QUALITY)
@@ -353,12 +353,21 @@ class EvidenceConfidenceEngine:
         snapshot,
         clustering_result: ClaimClusteringResult,
     ) -> ConfidenceResult:
+        from app.claim_clustering.snapshot import (
+            EvaluationSnapshot,
+            SnapshotContractError,
+        )
+
+        try:
+            validated = EvaluationSnapshot.validate_boundary(snapshot)
+        except SnapshotContractError as error:
+            raise ConfidenceInputError(str(error)) from error
         expected = (
-            snapshot.analysis_id,
-            snapshot.snapshot_id,
-            snapshot.product_identity,
-            snapshot.registry_id,
-            snapshot.registry_revision,
+            validated.analysis_id,
+            validated.snapshot_id,
+            validated.product_identity,
+            validated.registry_id,
+            validated.registry_revision,
         )
         actual = (
             clustering_result.analysis_id,
@@ -370,7 +379,7 @@ class EvidenceConfidenceEngine:
         if actual != expected:
             raise ConfidenceInputError("clusters do not belong to the supplied snapshot")
         verified_counts: dict[str, int] = defaultdict(int)
-        for assessment in snapshot.grounding_assessments:
+        for assessment in validated.grounding_assessments:
             verified_counts[assessment.claim.source_id] += 1
         metadata = [
             ConfidenceSourceMetadata.from_evidence_document(
@@ -378,9 +387,29 @@ class EvidenceConfidenceEngine:
                 verified_claim_count=verified_counts[document.source_key],
                 extracted_claim_count=verified_counts[document.source_key],
             )
-            for document in snapshot.evidence_documents
+            for document in validated.evidence_documents
         ]
-        return self.evaluate(clustering_result, metadata)
+        result = self.evaluate(clustering_result, metadata)
+        if any(
+            not document.grounding_eligible
+            for document in validated.evidence_documents
+        ):
+            issues = list(result.quality_issues)
+            if ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE not in issues:
+                issues.append(ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE)
+            level = (
+                ConfidenceLevel.MEDIUM
+                if result.confidence_level is ConfidenceLevel.HIGH
+                else result.confidence_level
+            )
+            result = result.model_copy(
+                update={
+                    "confidence_level": level,
+                    "quality_gate_passed": False,
+                    "quality_issues": issues,
+                }
+            )
+        return result
 
     @staticmethod
     def _saturating(count: int, scale: float) -> float:

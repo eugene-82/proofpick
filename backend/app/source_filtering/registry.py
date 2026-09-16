@@ -56,3 +56,15 @@ class SourceIdentityRegistry:
 
     def retained_sources(self):
         return self.deduplicator.active_sources()
+    def manifest_entries(self) -> tuple[tuple[str, str, str, str | None], ...]:
+        return tuple(
+            sorted(
+                (
+                    source.source_key,
+                    source.independence_group_id,
+                    source.normalized_url,
+                    source.content_hash,
+                )
+                for source in self.retained_sources()
+            )
+        )

@@ -18,6 +18,7 @@ class ConfidenceQualityIssue(str, Enum):
     NO_VERIFIED_CLAIM_COVERAGE = "no_verified_claim_coverage"
     UNKNOWN_SOURCE_QUALITY = "unknown_source_quality"
     INSUFFICIENT_DURABILITY_OBSERVATION = "insufficient_durability_observation"
+    UNSAFE_PARTIAL_EVIDENCE = "unsafe_partial_evidence"
 
 class ConfidenceSourceMetadata(ConfidenceModel):
     source_id: str = Field(pattern=r"^S\d{3,}$")

@@ -61,6 +61,7 @@ class EvaluationSnapshot(BaseModel):
     registry_revision: int = Field(ge=0)
     registry_manifest: str = Field(pattern=r"^[0-9a-f]{64}$")
     registry_source_identities: tuple[tuple[str, str], ...]
+    registry_source_provenance: tuple[tuple[str, str, str, str | None], ...]
     product_identity: str = Field(min_length=1)
     sources: tuple[SnapshotSource, ...]
     evidence_documents: tuple[SnapshotEvidenceDocument, ...]
@@ -89,13 +90,26 @@ class EvaluationSnapshot(BaseModel):
             raise ValueError("snapshot sources disagree with registry ownership")
         if len(identities) != len(set(identities)):
             raise ValueError("registry source identity must be unique")
+        provenance = tuple(
+            sorted(
+                (
+                    source.source_key,
+                    source.independence_group_id,
+                    source.normalized_url,
+                    source.content_hash,
+                )
+                for source in self.sources
+            )
+        )
+        if provenance != tuple(sorted(self.registry_source_provenance)):
+            raise ValueError("snapshot sources disagree with registry provenance")
         if self.registry_revision < len(identities):
             raise ValueError("registry revision predates snapshot sources")
         expected_manifest = self._registry_manifest(
             self.analysis_id,
             self.registry_id,
             self.registry_revision,
-            identities,
+            provenance,
         )
         if self.registry_manifest != expected_manifest:
             raise ValueError("registry manifest or revision mismatch")
@@ -125,6 +139,18 @@ class EvaluationSnapshot(BaseModel):
                 )
             if assessment.claim.source_id not in document_ids:
                 raise ValueError("verified claim lacks snapshot evidence")
+            document = next(
+                item
+                for item in self.evidence_documents
+                if item.source_key == assessment.claim.source_id
+            )
+            if not document.grounding_eligible:
+                raise ValueError("verified claim uses incomplete evidence")
+            grounding_text = document.grounding_text or document.text
+            if " ".join(assessment.claim.evidence_fragment.casefold().split()) not in (
+                " ".join(grounding_text.casefold().split())
+            ):
+                raise ValueError("verified claim fragment is outside grounding evidence")
 
         expected_snapshot_id = self._snapshot_id(self._digest_payload())
         if self.snapshot_id != expected_snapshot_id:
@@ -162,9 +188,25 @@ class EvaluationSnapshot(BaseModel):
             )
         )
         registry_identities = tuple(sorted(registry.identities()))
-        if source_identities != registry_identities or any(
-            not registry.owns_identity(source_key, group_id)
-            for source_key, group_id in source_identities
+        source_provenance = tuple(
+            sorted(
+                (
+                    source.source_key,
+                    source.independence_group_id,
+                    source.normalized_url,
+                    source.content_hash,
+                )
+                for source in sources
+            )
+        )
+        registry_provenance = registry.manifest_entries()
+        if (
+            source_identities != registry_identities
+            or source_provenance != registry_provenance
+            or any(
+                not registry.owns_identity(source_key, group_id)
+                for source_key, group_id in source_identities
+            )
         ):
             raise SnapshotContractError(
                 "all sources must belong to the shared registry revision"
@@ -173,7 +215,7 @@ class EvaluationSnapshot(BaseModel):
             analysis_id,
             registry.registry_id,
             registry.revision,
-            source_identities,
+            registry_provenance,
         )
         values: dict[str, Any] = {
             "analysis_id": analysis_id,
@@ -181,6 +223,7 @@ class EvaluationSnapshot(BaseModel):
             "registry_revision": registry.revision,
             "registry_manifest": registry_manifest,
             "registry_source_identities": source_identities,
+            "registry_source_provenance": registry_provenance,
             "product_identity": product.canonical_name,
             "sources": [source.model_dump(mode="python") for source in sources],
             "evidence_documents": [
@@ -202,6 +245,16 @@ class EvaluationSnapshot(BaseModel):
         except ValueError as error:
             raise SnapshotContractError(str(error)) from error
 
+    @classmethod
+    def validate_boundary(cls, snapshot: object) -> "EvaluationSnapshot":
+        """Revalidate serialized state at every downstream service boundary."""
+        if not isinstance(snapshot, EvaluationSnapshot):
+            raise SnapshotContractError("evaluation snapshot type is required")
+        try:
+            data = snapshot.model_dump(mode="python", warnings=False)
+            return cls.model_validate(data)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise SnapshotContractError(f"invalid evaluation snapshot: {error}") from error
     def model_copy(
         self,
         *,
@@ -221,6 +274,7 @@ class EvaluationSnapshot(BaseModel):
                 "registry_revision": self.registry_revision,
                 "registry_manifest": self.registry_manifest,
                 "registry_source_identities": self.registry_source_identities,
+                "registry_source_provenance": self.registry_source_provenance,
                 "product_identity": self.product_identity,
                 "sources": self.sources,
                 "evidence_documents": self.evidence_documents,
@@ -257,10 +311,14 @@ class EvaluationSnapshot(BaseModel):
             "registry_source_identities": sorted(
                 list(item) for item in values["registry_source_identities"]
             ),
+            "registry_source_provenance": sorted(
+                list(item) for item in values["registry_source_provenance"]
+            ),
             "product_identity": values["product_identity"],
             "sources": sorted([
                 {
                     "source_key": source.source_key,
+                    "original_url": source.original_url,
                     "normalized_url": source.normalized_url,
                     "domain": source.domain,
                     "content_hash": source.content_hash,
@@ -273,7 +331,11 @@ class EvaluationSnapshot(BaseModel):
             "evidence": sorted([
                 {
                     "source_key": document.source_key,
+                    "original_url": document.original_url,
+                    "normalized_url": document.normalized_url,
                     "text": document.text,
+                    "grounding_text": document.grounding_text,
+                    "grounding_eligible": document.grounding_eligible,
                     "content_hash": document.content_hash,
                     "evidence_source": document.evidence_source.value,
                     "evidence_quality": document.evidence_quality.value,
@@ -323,13 +385,13 @@ class EvaluationSnapshot(BaseModel):
         analysis_id: str,
         registry_id: str,
         revision: int,
-        identities: tuple[tuple[str, str], ...],
+        provenance: tuple[tuple[str, str, str, str | None], ...],
     ) -> str:
         payload = {
             "analysis_id": analysis_id,
             "registry_id": registry_id,
             "registry_revision": revision,
-            "identities": sorted(list(item) for item in identities),
+            "provenance": sorted(list(item) for item in provenance),
         }
         return sha256(
             json.dumps(

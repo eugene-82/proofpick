@@ -31,6 +31,8 @@ SIGNAL_PATTERNS = (NEGATION_PATTERN, RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTE
 class CompressionResult:
     text: str
     truncated: bool
+    grounding_text: str | None
+    grounding_eligible: bool
 
 
 class EvidenceCompressor:
@@ -42,14 +44,16 @@ class EvidenceCompressor:
     def compress(self, text: str) -> CompressionResult:
         limit = self._policy.max_chars_per_source
         if len(text) <= limit:
-            return CompressionResult(text=text, truncated=False)
+            return CompressionResult(text, False, text, True)
         units = [
             part.strip()
             for part in SENTENCE_SPLIT_PATTERN.split(text)
             if part.strip()
         ]
         if len(units) <= 1:
-            return CompressionResult(self._bounded_single_unit(text, limit), True)
+            return CompressionResult(
+                self._bounded_single_unit(text, limit), True, None, False
+            )
 
         mandatory = {0, len(units) // 2, len(units) - 1}
         for pattern in (RISK_PATTERN, POSITIVE_PATTERN, USAGE_PATTERN, NEGATION_PATTERN):
@@ -66,7 +70,18 @@ class EvidenceCompressor:
                 self._excerpt_unit(units[index], quota)
                 for index, quota in zip(ordered_mandatory, quotas, strict=True)
             ]
-            return CompressionResult(" ".join(sections).rstrip(), True)
+            grounding_units = [
+                units[index]
+                for index, quota in zip(ordered_mandatory, quotas, strict=True)
+                if len(units[index]) <= quota
+            ]
+            grounding_text = " ".join(grounding_units) or None
+            return CompressionResult(
+                " ".join(sections).rstrip(),
+                True,
+                grounding_text,
+                grounding_text is not None,
+            )
 
         selected = set(ordered_mandatory)
         used = mandatory_length + separator_budget
@@ -78,7 +93,7 @@ class EvidenceCompressor:
                 selected.add(index)
                 used += needed
         result = " ".join(units[index] for index in sorted(selected))
-        return CompressionResult(result.rstrip(), True)
+        return CompressionResult(result.rstrip(), True, result.rstrip(), True)
 
     @staticmethod
     def _quotas(total: int, count: int) -> list[int]:

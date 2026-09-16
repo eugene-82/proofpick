@@ -85,6 +85,40 @@ class PurchaseDecisionEngine:
                             [DecisionReasonCode.NO_AFFIRMATIVE_SUPPORT], [],
                             sufficient=False)
 
+    def evaluate_snapshot(
+        self,
+        snapshot,
+        confidence: ConfidenceResult,
+        clustering_result: ClaimClusteringResult,
+    ) -> PurchaseDecisionResult:
+        from app.claim_clustering.snapshot import (
+            EvaluationSnapshot,
+            SnapshotContractError,
+        )
+
+        try:
+            validated = EvaluationSnapshot.validate_boundary(snapshot)
+        except SnapshotContractError as error:
+            raise DecisionInputError(str(error)) from error
+        expected = (
+            validated.analysis_id,
+            validated.snapshot_id,
+            validated.product_identity,
+            validated.registry_id,
+            validated.registry_revision,
+        )
+        fields = (
+            "analysis_id",
+            "snapshot_id",
+            "product_identity",
+            "registry_id",
+            "registry_revision",
+        )
+        if tuple(getattr(confidence, field) for field in fields) != expected:
+            raise DecisionInputError("confidence does not belong to the supplied snapshot")
+        if tuple(getattr(clustering_result, field) for field in fields) != expected:
+            raise DecisionInputError("clusters do not belong to the supplied snapshot")
+        return self.evaluate(confidence, clustering_result)
     @staticmethod
     def _result(decision, confidence, reasons, unresolved, *, blocking=None,
                 conditions=None, supporting=None, sufficient=False):

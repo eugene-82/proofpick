@@ -98,15 +98,18 @@ class SemanticClaimClusterer:
         return ClaimClusteringResult(clusters=clusters)
 
     def cluster_snapshot(self, snapshot) -> ClaimClusteringResult:
-        """Cluster only claims admitted by a validated evaluation snapshot."""
-        result = self.cluster(snapshot.verified_claims, snapshot.sources)
+        """Cluster only claims admitted by a revalidated evaluation snapshot."""
+        from .snapshot import EvaluationSnapshot
+
+        validated = EvaluationSnapshot.validate_boundary(snapshot)
+        result = self.cluster(validated.verified_claims, validated.sources)
         return result.model_copy(
             update={
-                "analysis_id": snapshot.analysis_id,
-                "snapshot_id": snapshot.snapshot_id,
-                "product_identity": snapshot.product_identity,
-                "registry_id": snapshot.registry_id,
-                "registry_revision": snapshot.registry_revision,
+                "analysis_id": validated.analysis_id,
+                "snapshot_id": validated.snapshot_id,
+                "product_identity": validated.product_identity,
+                "registry_id": validated.registry_id,
+                "registry_revision": validated.registry_revision,
             }
         )
 
