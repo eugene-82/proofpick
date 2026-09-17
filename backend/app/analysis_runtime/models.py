@@ -52,11 +52,18 @@ class AnalysisResponse(RuntimeModel):
     analysis_id: UUID
     status: AnalysisStatus
     product: str = Field(min_length=1)
+    initial_decision: PurchaseDecision
     decision: PurchaseDecision
     confidence: float = Field(ge=0, le=1)
     confidence_level: ConfidenceLevel
     reasons: list[DecisionReasonCode]
     blocking_issues: list[DecisionSignal]
     unresolved_risks: list[DecisionSignal]
+    counter_evidence_attempted: bool
+    counter_evidence_completed: bool
+    counter_evidence_queries: list[str] = Field(max_length=3)
+    counter_evidence_source_count: int = Field(ge=0)
+    counter_evidence_sources: list[AnalysisSourceSummary]
+    decision_changed: bool
     claims: list[AnalysisClaimSummary]
     sources: list[AnalysisSourceSummary]

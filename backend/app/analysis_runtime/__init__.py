@@ -6,6 +6,7 @@ from .exceptions import (
     AnalysisProviderUnavailableError,
     AnalysisRuntimeError,
 )
+from .counter_evidence import CounterEvidencePlan, CounterEvidenceQueryGenerator
 from .models import (
     AnalysisClaimSummary,
     AnalysisEvidenceReference,
@@ -28,4 +29,6 @@ __all__ = [
     "AnalysisRuntimeProviders",
     "AnalysisRuntimeService",
     "AnalysisSourceSummary",
+    "CounterEvidencePlan",
+    "CounterEvidenceQueryGenerator",
 ]
