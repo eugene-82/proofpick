@@ -229,11 +229,13 @@ def runtime_service(
     return service_type(providers), verifier
 
 
-def post_analysis(service: AnalysisRuntimeService):
+def post_analysis(
+    service: AnalysisRuntimeService, query: str = "AirPods Pro 2"
+):
     app.dependency_overrides[get_analysis_runtime_service] = lambda: service
     try:
         return TestClient(app).post(
-            "/api/analyses", json={"query": "AirPods Pro 2"}
+            "/api/analyses", json={"query": query}
         )
     finally:
         app.dependency_overrides.clear()
@@ -408,6 +410,97 @@ def test_runtime_endpoint_rejects_unresolved_product() -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "PRODUCT_IDENTITY_UNRESOLVED"
+
+
+class ProvisionalIdentitySearchProvider(SearchProvider):
+    def __init__(self, *, confirmed: bool) -> None:
+        self.confirmed = confirmed
+        self.calls: list[str] = []
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        include_raw_content: bool = False,
+    ) -> list[SearchResult]:
+        self.calls.append(query)
+        if len(self.calls) != 1:
+            return []
+        titles = (
+            [
+                "Acme ZX-500 long-term review",
+                "Acme ZX-500 owner report",
+                "Acme ZX-500 durability test",
+                "Acme ZX-400 competing model review",
+            ]
+            if self.confirmed
+            else [
+                "Acme ZX-500 review",
+                "Acme ZX-400 comparison",
+                "Acme products guide",
+            ]
+        )
+        return [
+            SearchResult(
+                title=title,
+                url=f"https://identity-{index}.example.com/acme",
+                snippet=POSITIVE_OBSERVATIONS[index % len(POSITIVE_OBSERVATIONS)],
+                raw_content=POSITIVE_OBSERVATIONS[index % len(POSITIVE_OBSERVATIONS)],
+            )
+            for index, title in enumerate(titles, start=1)
+        ]
+
+
+def provisional_runtime(
+    *, confirmed: bool
+) -> tuple[AnalysisRuntimeService, ProvisionalIdentitySearchProvider]:
+    search = ProvisionalIdentitySearchProvider(confirmed=confirmed)
+    providers = AnalysisRuntimeProviders(
+        search=search,
+        claim_extraction=FixtureClaimProvider(),
+        claim_verification=RecordingVerificationProvider(),
+        embeddings=FixtureEmbeddingProvider(),
+    )
+    return AnalysisRuntimeService(providers), search
+
+
+def test_search_confirmed_provisional_identity_enters_normal_pipeline() -> None:
+    service, search = provisional_runtime(confirmed=True)
+
+    response = post_analysis(service, "Acme ZX-500")
+
+    assert response.status_code == 200
+    assert response.json()["product"] == "Acme ZX-500"
+    assert len(response.json()["sources"]) == 3
+    assert all(
+        "ZX-400" not in (source["title"] or "")
+        for source in response.json()["sources"]
+    )
+    assert len(search.calls) <= 6
+    assert search.calls[0] == "Acme ZX-500"
+
+
+def test_unconfirmed_provisional_identity_still_returns_422() -> None:
+    service, search = provisional_runtime(confirmed=False)
+
+    response = post_analysis(service, "Acme ZX-500")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "PRODUCT_IDENTITY_UNRESOLVED"
+    assert search.calls == ["Acme ZX-500"]
+
+
+def test_existing_galaxy_identity_skips_provisional_probe() -> None:
+    service, _ = runtime_service(POSITIVE_OBSERVATIONS)
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+
+    response = post_analysis(service, "Galaxy Buds3 Pro")
+
+    assert response.status_code == 200
+    assert response.json()["product"] == "Samsung Galaxy Buds3 Pro"
+    assert search.calls[0][0].startswith("Samsung Galaxy Buds3 Pro")
 
 
 def test_verified_severe_counter_evidence_reaches_existing_skip_rules() -> None:

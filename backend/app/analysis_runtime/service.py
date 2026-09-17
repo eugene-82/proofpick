@@ -28,6 +28,7 @@ from app.models import AnalysisStatus
 from app.product_resolution.deterministic import DeterministicProductResolver
 from app.product_resolution.exceptions import ProductResolutionError
 from app.product_resolution.models import ProductResolution
+from app.product_resolution.search_assisted import SearchAssistedIdentityResolver
 from app.query_generation.deterministic import DeterministicQueryGenerator
 from app.search.exceptions import SearchProviderError
 from app.source_filtering import (
@@ -70,6 +71,7 @@ class AnalysisRuntimeService:
     def __init__(self, providers: AnalysisRuntimeProviders) -> None:
         self._providers = providers
         self._resolver = DeterministicProductResolver()
+        self._search_identity_resolver = SearchAssistedIdentityResolver()
         self._query_generator = DeterministicQueryGenerator()
         self._counter_query_generator = CounterEvidenceQueryGenerator()
         self._evidence_processor = DeterministicEvidenceProcessor()
@@ -86,17 +88,72 @@ class AnalysisRuntimeService:
             nonlocal search_query_count
             search_query_count += 1
 
-        product = self._resolve_product(query)
         analysis_id = str(uuid4())
+        product = self._resolve_product(query)
+        provisional_candidate = None
+        probe_results = []
+        probe_query: str | None = None
+        if product.ambiguous or not product.canonical_name:
+            provisional_candidate = (
+                self._search_identity_resolver.provisional_candidate(query)
+            )
+            if provisional_candidate is None:
+                logger.info("product_identity_unresolved stage=initial")
+                raise AnalysisInputError(
+                    "query must resolve to one supported product identity"
+                )
+            logger.info(
+                "product_identity_provisional stage=candidate model_term_count=%d",
+                len(provisional_candidate.model_terms),
+            )
+            probe_query = provisional_candidate.canonical_name
+            try:
+                probe_results = self._search(
+                    (probe_query,), on_attempt=record_search_attempt
+                )
+            except SearchProviderError as error:
+                raise AnalysisProviderUnavailableError(
+                    "search provider is unavailable"
+                ) from error
+            confirmed = self._search_identity_resolver.confirm(
+                provisional_candidate, probe_results
+            )
+            if confirmed is None:
+                logger.info(
+                    "product_identity_unresolved stage=search_confirmation_failed"
+                )
+                raise AnalysisInputError(
+                    "search results did not confirm one product identity"
+                )
+            logger.info("product_identity_confirmed stage=search_confirmation")
+            product = confirmed
+            probe_results = self._search_identity_resolver.supporting_results(
+                provisional_candidate, probe_results
+            )
         registry = SourceIdentityRegistry(analysis_id=analysis_id)
         source_filter = DeterministicSourceFilter(registry=registry)
         query_plan = self._query_generator.generate(product)
-        initial_queries = tuple(item.text for item in query_plan.queries)
+        planned_queries = tuple(item.text for item in query_plan.queries)
+        initial_queries = (
+            (probe_query, *planned_queries[1:])
+            if probe_query is not None
+            else planned_queries
+        )
 
         try:
-            initial_results = self._search(
-                initial_queries, on_attempt=record_search_attempt
+            remaining_queries = (
+                initial_queries[1:] if probe_query is not None else initial_queries
             )
+            initial_results = [
+                *probe_results,
+                *self._search(
+                    remaining_queries, on_attempt=record_search_attempt
+                ),
+            ]
+            if provisional_candidate is not None:
+                initial_results = self._search_identity_resolver.supporting_results(
+                    provisional_candidate, initial_results
+                )
         except SearchProviderError as error:
             raise AnalysisProviderUnavailableError(
                 "search provider is unavailable"
@@ -129,6 +186,10 @@ class AnalysisRuntimeService:
             counter_results = self._search(
                 counter_plan.queries, on_attempt=record_search_attempt
             )
+            if provisional_candidate is not None:
+                counter_results = self._search_identity_resolver.supporting_results(
+                    provisional_candidate, counter_results
+                )
         except SearchProviderError:
             response = self._response(
                 UUID(analysis_id), product, initial, initial,
@@ -277,10 +338,6 @@ class AnalysisRuntimeService:
             product = self._resolver.resolve(query)
         except ProductResolutionError as error:
             raise AnalysisInputError("invalid product query") from error
-        if product.ambiguous or not product.canonical_name:
-            raise AnalysisInputError(
-                "query must resolve to one supported product identity"
-            )
         return product
 
     @staticmethod
