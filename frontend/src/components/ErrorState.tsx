@@ -17,6 +17,14 @@ const errorCopy: Record<ApiErrorCode, { title: string; message: string }> = {
     title: "안전하게 분석을 완료하지 못했습니다",
     message: "불완전한 결과를 보여주지 않았습니다. 잠시 후 다시 시도해 주세요.",
   },
+  API_CONFIGURATION_ERROR: {
+    title: "분석 서버 주소가 설정되지 않았습니다",
+    message: "배포 환경의 API 주소 설정을 확인해 주세요.",
+  },
+  ANALYSIS_TIMEOUT: {
+    title: "분석 시간이 예상보다 오래 걸리고 있습니다",
+    message: "잠시 후 다시 시도해 주세요. 이미 진행 중인 요청이 있다면 완료까지 시간이 걸릴 수 있습니다.",
+  },
   NETWORK_ERROR: {
     title: "분석 서버에 연결할 수 없습니다",
     message: "backend 실행 상태와 API 주소를 확인한 뒤 다시 시도해 주세요.",

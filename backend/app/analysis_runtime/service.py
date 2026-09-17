@@ -1,6 +1,9 @@
 """Thin synchronous composition of existing ProofPick public services."""
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 from uuid import UUID, uuid4
 
 from app.claim_clustering import (
@@ -48,6 +51,9 @@ from .models import (
 from .providers import AnalysisRuntimeProviders
 
 
+logger = logging.getLogger("uvicorn.error.proofpick.analysis")
+
+
 @dataclass(frozen=True)
 class _Evaluation:
     snapshot: EvaluationSnapshot
@@ -73,6 +79,13 @@ class AnalysisRuntimeService:
         return cls(AnalysisRuntimeProviders.from_env())
 
     def analyze(self, query: str) -> AnalysisResponse:
+        started_at = monotonic()
+        search_query_count = 0
+
+        def record_search_attempt() -> None:
+            nonlocal search_query_count
+            search_query_count += 1
+
         product = self._resolve_product(query)
         analysis_id = str(uuid4())
         registry = SourceIdentityRegistry(analysis_id=analysis_id)
@@ -81,7 +94,9 @@ class AnalysisRuntimeService:
         initial_queries = tuple(item.text for item in query_plan.queries)
 
         try:
-            initial_results = self._search(initial_queries)
+            initial_results = self._search(
+                initial_queries, on_attempt=record_search_attempt
+            )
         except SearchProviderError as error:
             raise AnalysisProviderUnavailableError(
                 "search provider is unavailable"
@@ -96,10 +111,13 @@ class AnalysisRuntimeService:
             initial_queries=initial_queries,
         )
         if not counter_plan.attempted:
-            return self._response(
+            response = self._response(
                 UUID(analysis_id), product, initial, initial,
                 attempted=False, completed=False, queries=(),
                 counter_source_keys=frozenset(),
+            )
+            return self._log_completion(
+                response, query_count=search_query_count, started_at=started_at
             )
 
         initial_identity_urls = frozenset(
@@ -108,12 +126,19 @@ class AnalysisRuntimeService:
             for url in (source.normalized_url, *source.url_aliases)
         )
         try:
-            counter_results = self._search(counter_plan.queries)
+            counter_results = self._search(
+                counter_plan.queries, on_attempt=record_search_attempt
+            )
         except SearchProviderError:
-            return self._response(
+            response = self._response(
                 UUID(analysis_id), product, initial, initial,
                 attempted=True, completed=False, queries=counter_plan.queries,
                 counter_source_keys=frozenset(),
+            )
+            return self._log_completion(
+                response,
+                query_count=search_query_count,
+                started_at=started_at,
             )
 
         source_filter.filter(counter_results)
@@ -125,22 +150,54 @@ class AnalysisRuntimeService:
                 {source.normalized_url, *source.url_aliases}
             )
         )
-        return self._response(
+        response = self._response(
             UUID(analysis_id), product, initial, final,
             attempted=True, completed=True, queries=counter_plan.queries,
             counter_source_keys=counter_source_keys,
         )
+        return self._log_completion(
+            response,
+            query_count=search_query_count,
+            started_at=started_at,
+        )
 
-    def _search(self, queries: tuple[str, ...]):
-        return [
-            result
-            for query in queries
-            for result in self._providers.search.search(
-                query,
-                max_results=5,
-                include_raw_content=True,
+    @staticmethod
+    def _log_completion(
+        response: AnalysisResponse,
+        *,
+        query_count: int,
+        started_at: float,
+    ) -> AnalysisResponse:
+        logger.info(
+            "analysis_complete request_id=%s query_count=%d source_count=%d "
+            "decision=%s counter_attempted=%s counter_completed=%s duration_ms=%d",
+            response.analysis_id,
+            query_count,
+            len(response.sources),
+            response.decision.value,
+            response.counter_evidence_attempted,
+            response.counter_evidence_completed,
+            round((monotonic() - started_at) * 1000),
+        )
+        return response
+
+    def _search(
+        self,
+        queries: tuple[str, ...],
+        *,
+        on_attempt: Callable[[], None],
+    ):
+        results = []
+        for query in queries:
+            on_attempt()
+            results.extend(
+                self._providers.search.search(
+                    query,
+                    max_results=5,
+                    include_raw_content=True,
+                )
             )
-        ]
+        return results
 
     def _evaluate_final_set(
         self,

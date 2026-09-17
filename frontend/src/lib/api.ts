@@ -1,8 +1,11 @@
 import { AnalysisApiError, type AnalysisResponse, type ApiErrorCode } from "./types";
 
-const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
-).replace(/\/$/, "");
+const CONFIGURED_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(
+  /\/$/,
+  "",
+);
+const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
+const ANALYSIS_TIMEOUT_MS = 300_000;
 
 interface ErrorEnvelope {
   detail?: { code?: string; message?: string };
@@ -33,19 +36,40 @@ function fallbackCode(status: number): ApiErrorCode {
   return "UNKNOWN_ERROR";
 }
 
+function apiBaseUrl(): string {
+  if (CONFIGURED_API_BASE_URL) return CONFIGURED_API_BASE_URL;
+  if (process.env.NODE_ENV === "development") return LOCAL_API_BASE_URL;
+  throw new AnalysisApiError(
+    "API_CONFIGURATION_ERROR",
+    "Production API URL is not configured.",
+  );
+}
+
 export async function createAnalysis(query: string): Promise<AnalysisResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/analyses`, {
+    response = await fetch(`${apiBaseUrl()}/api/analyses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
+      signal: controller.signal,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof AnalysisApiError) throw error;
+    if (controller.signal.aborted) {
+      throw new AnalysisApiError(
+        "ANALYSIS_TIMEOUT",
+        "Analysis exceeded the client timeout.",
+      );
+    }
     throw new AnalysisApiError(
       "NETWORK_ERROR",
       "분석 서버에 연결하지 못했습니다. 서버 실행 상태를 확인한 뒤 다시 시도해 주세요.",
     );
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {

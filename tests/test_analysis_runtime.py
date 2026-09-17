@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from hashlib import sha256
 
@@ -258,6 +259,33 @@ def test_runtime_endpoint_reaches_normal_buy() -> None:
     assert body["counter_evidence_source_count"] == 0
     assert body["decision_changed"] is False
     assert verifier.calls == [(False, 4), (False, 4)]
+
+
+def test_runtime_success_log_is_bounded_and_contains_demo_metrics(caplog) -> None:
+    service, _ = runtime_service(POSITIVE_OBSERVATIONS)
+
+    logger_name = "uvicorn.error.proofpick.analysis"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        response = post_analysis(service)
+
+    assert response.status_code == 200
+    record = next(
+        record
+        for record in caplog.records
+        if record.name == logger_name
+    )
+    message = record.getMessage()
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert "analysis_complete request_id=" in message
+    assert f"query_count={len(search.calls)}" in message
+    assert "source_count=4" in message
+    assert "decision=BUY" in message
+    assert "counter_attempted=True" in message
+    assert "counter_completed=True" in message
+    assert "duration_ms=" in message
+    assert "AirPods Pro 2" not in message
+    assert POSITIVE_OBSERVATIONS[0] not in message
 
 
 def test_runtime_endpoint_reaches_normal_skip() -> None:
