@@ -2,7 +2,6 @@
 
 from collections.abc import Iterable
 
-from app.reliability import has_distinct_observation
 from app.search.models import SearchResult
 
 from .base import SourceFilter
@@ -68,60 +67,46 @@ class DeterministicSourceFilter(SourceFilter):
                 )
                 continue
 
-            fingerprint_content = source.raw_content or source.snippet
-            dependency_text = self._normalizer.dependency_text(fingerprint_content)
-            copy_text = self._normalizer.copy_text(fingerprint_content)
-            content_hash = self._normalizer.content_fingerprint(dependency_text)
+            final_text = source.raw_content or source.snippet
+            copy_text = self._normalizer.copy_text(final_text)
+            content_hash = self._normalizer.exact_visible_content_fingerprint(
+                source.raw_content
+            )
+            declared_state = self._declared_independence_state(
+                source, from_search_result=from_search_result
+            )
             deduplicator = self._registry.deduplicator
             duplicate = deduplicator.find_duplicate(
                 normalized_url, content_hash, copy_text
             )
-            if duplicate is not None and duplicate.drop:
+            if duplicate is not None:
                 representative_key = duplicate.representative_key
-                independence_group_id = duplicate.independence_group_id
-                current_representative = deduplicator.representative(
-                    representative_key
-                )
-                if (
-                    duplicate.can_enrich
-                    or normalized_url < current_representative.normalized_url
-                ):
+                if duplicate.can_enrich:
                     representative = deduplicator.enrich(
                         representative_key,
                         source,
                         normalized_url=normalized_url,
                         domain=domain,
                         copy_text=copy_text,
-                        dependency_text=dependency_text,
+                        dependency_text=None,
                         fingerprint=self._normalizer.content_fingerprint,
+                        declared_state=declared_state,
                     )
-                    self._promote_if_supported(
-                        representative,
-                        source,
-                        copy_text,
-                        from_search_result,
-                    )
-                    representative_key = representative.source_key
-                    independence_group_id = representative.independence_group_id
                 deduplicator.remember_alias(normalized_url, representative_key)
+                representative = deduplicator.representative(representative_key)
                 self._registry.record_reconciliation()
                 dropped.append(
                     DroppedSource(
                         source_key=source_key,
                         original_url=original_url,
                         reason=duplicate.reason,
-                        duplicate_of=representative_key,
-                        independence_group_id=independence_group_id,
+                        duplicate_of=representative.source_key,
+                        independence_group_id=representative.independence_group_id,
                         independence_state=IndependenceState.DEPENDENT,
                     )
                 )
                 continue
 
-            state, reasons = self._assess_independence(
-                source,
-                copy_text,
-                from_search_result=from_search_result,
-            )
             accepted_source = FilteredSource(
                 source_key=source_key,
                 original_url=original_url or "",
@@ -134,11 +119,17 @@ class DeterministicSourceFilter(SourceFilter):
                 source_type=source.source_type or self._classify_source_type(domain),
                 content_hash=content_hash,
                 independence_group_id=self._registry.next_group_id(),
-                independence_state=state,
-                independence_reason_codes=reasons,
+                independence_state=IndependenceState.UNKNOWN,
+                independence_reason_codes=[
+                    IndependenceReasonCode.INSUFFICIENT_CONTENT
+                ],
             )
             accepted.append(accepted_source)
-            deduplicator.remember(accepted_source, copy_text)
+            deduplicator.remember(
+                accepted_source,
+                copy_text,
+                declared_state=declared_state,
+            )
             self._registry.record_source(
                 source_key, accepted_source.independence_group_id
             )
@@ -146,51 +137,23 @@ class DeterministicSourceFilter(SourceFilter):
             accepted_sources=accepted, dropped_sources=dropped
         )
 
-    @staticmethod
-    def _assess_independence(
+    def _declared_independence_state(
+        self,
         source: SourceCandidate,
-        copy_text: str | None,
         *,
         from_search_result: bool,
-    ) -> tuple[IndependenceState, list[IndependenceReasonCode]]:
-        if source.independence_state is IndependenceState.CONFIRMED:
-            return (
-                IndependenceState.CONFIRMED,
-                [IndependenceReasonCode.EXPLICITLY_CONFIRMED],
-            )
-        if source.independence_state is IndependenceState.DEPENDENT:
-            return IndependenceState.DEPENDENT, [IndependenceReasonCode.DUPLICATE]
+    ) -> IndependenceState:
+        if source.independence_state is not IndependenceState.UNKNOWN:
+            return source.independence_state
         if (
             from_search_result
             and source.raw_content
-            and copy_text
-            and has_distinct_observation(copy_text)
-        ):
-            return (
-                IndependenceState.CONFIRMED,
-                [IndependenceReasonCode.DISTINCT_SUBSTANTIVE_CONTENT],
+            and self._normalizer.has_structural_document_context(
+                source.raw_content
             )
-        return (
-            IndependenceState.UNKNOWN,
-            [IndependenceReasonCode.INSUFFICIENT_CONTENT],
-        )
-
-    @classmethod
-    def _promote_if_supported(
-        cls,
-        representative: FilteredSource,
-        candidate: SourceCandidate,
-        copy_text: str | None,
-        from_search_result: bool,
-    ) -> None:
-        state, reasons = cls._assess_independence(
-            candidate,
-            copy_text,
-            from_search_result=from_search_result,
-        )
-        if state is IndependenceState.CONFIRMED:
-            representative.independence_state = state
-            representative.independence_reason_codes = reasons
+        ):
+            return IndependenceState.CONFIRMED
+        return IndependenceState.UNKNOWN
 
     @staticmethod
     def _as_candidate(

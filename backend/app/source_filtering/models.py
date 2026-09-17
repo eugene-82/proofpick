@@ -59,6 +59,11 @@ class FilteredSource(BaseModel):
     title: str | None = None
     snippet: str | None = None
     raw_content: str | None = None
+    url_aliases: list[str] = Field(default_factory=list)
+    copy_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    dependency_representative_url: str | None = None
     published_at: datetime | None = None
     source_type: SourceType
     content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

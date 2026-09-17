@@ -1,6 +1,5 @@
 """Deterministic orchestration for reusable bounded evidence."""
 
-import re
 from collections.abc import Iterable
 
 from app.source_filtering.models import FilteredSource
@@ -12,25 +11,6 @@ from .models import (
     EvidenceDocument, EvidenceQuality, EvidenceSource, ObservationState,
 )
 from .policy import DEFAULT_EVIDENCE_BUDGET_POLICY, EvidenceBudgetPolicy
-
-
-FIRST_IMPRESSION_PATTERN = re.compile(
-    r"\b(?:first\s+day|day\s+one|today|just\s+(?:got|bought|opened)|initial\s+impression)\b|"
-    r"(?:첫날|첫\s*인상|오늘)", re.I
-)
-OBSERVATION_CLAUSE_SPLIT = re.compile(r"\s*(?:[.!?;]|\band\b|\bbut\b)\s*", re.I)
-NON_OBSERVATION_DURATION_PATTERN = re.compile(
-    r"\b(?:warranty|subscription|return\s+period|trial|coverage)\b", re.I
-)
-ESTABLISHED_USAGE_PATTERN = re.compile(
-    r"\b(?:i|we)\s+(?:have\s+)?(?:used|owned|tested|had)\b[^.!?;]{0,60}"
-    r"\bfor\s+(?:\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
-    r"(?:weeks?|months?|years?)\b|"
-    r"\bafter\s+(?:\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
-    r"(?:weeks?|months?|years?)\s+(?:of\s+)?(?:daily\s+)?(?:use|usage|ownership|testing)\b|"
-    r"(?:\d+\s*(?:주|개월|년)(?:간|째)?\s*(?:사용|이용|써|썼))",
-    re.I,
-)
 
 
 class DeterministicEvidenceProcessor(EvidenceProcessor):
@@ -71,32 +51,16 @@ class DeterministicEvidenceProcessor(EvidenceProcessor):
             content_hash=source.content_hash, source_type=source.source_type,
             independence_group_id=source.independence_group_id,
             independence_state=source.independence_state, evidence_quality=quality,
-            observation_state=self._observation_state(cleaned_text),
+            observation_state=ObservationState.UNKNOWN,
             content_coverage_ratio=ratio,
             grounding_text=compressed.grounding_text,
             grounding_eligible=compressed.grounding_eligible,
+            segments=compressed.segments,
+            evidence_coverage_limited=compressed.evidence_coverage_limited,
         )
 
     def process_all(self, sources: Iterable[FilteredSource]) -> list[EvidenceDocument]:
         return [document for source in sources if (document := self.process(source)) is not None]
-
-    @staticmethod
-    def _observation_state(text: str) -> ObservationState:
-        clauses = [
-            clause.strip()
-            for clause in OBSERVATION_CLAUSE_SPLIT.split(text)
-            if clause.strip()
-        ]
-        established = any(
-            ESTABLISHED_USAGE_PATTERN.search(clause)
-            and not NON_OBSERVATION_DURATION_PATTERN.search(clause)
-            for clause in clauses
-        )
-        if established:
-            return ObservationState.ESTABLISHED
-        if any(FIRST_IMPRESSION_PATTERN.search(clause) for clause in clauses):
-            return ObservationState.FIRST_IMPRESSION
-        return ObservationState.UNKNOWN
 
     @staticmethod
     def _select_text(source: FilteredSource):

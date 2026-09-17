@@ -16,5 +16,6 @@ class ClaimExtractionProvider(ABC):
         documents: Sequence[EvidenceDocument],
         *,
         repair: bool = False,
+        target_product_id: str = "unspecified-product",
     ) -> Any:
         """Return data to be validated against ClaimExtractionPayload."""

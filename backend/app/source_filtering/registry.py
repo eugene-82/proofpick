@@ -39,7 +39,10 @@ class SourceIdentityRegistry:
         self.revision += 1
 
     def owns_source(self, source_key: str) -> bool:
-        return source_key in self._source_keys
+        return any(
+            source.source_key == source_key
+            for source in self.retained_sources()
+        )
 
     def owns_identity(self, source_key: str, group_id: str) -> bool:
         active = {
@@ -56,7 +59,15 @@ class SourceIdentityRegistry:
 
     def retained_sources(self):
         return self.deduplicator.active_sources()
-    def manifest_entries(self) -> tuple[tuple[str, str, str, str | None], ...]:
+
+    def manifest_entries(
+        self,
+    ) -> tuple[
+        tuple[
+            str, str, str, str | None, str | None, str | None, tuple[str, ...]
+        ],
+        ...,
+    ]:
         return tuple(
             sorted(
                 (
@@ -64,6 +75,9 @@ class SourceIdentityRegistry:
                     source.independence_group_id,
                     source.normalized_url,
                     source.content_hash,
+                    source.copy_fingerprint,
+                    source.dependency_representative_url,
+                    tuple(sorted(source.url_aliases)),
                 )
                 for source in self.retained_sources()
             )

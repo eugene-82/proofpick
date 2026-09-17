@@ -7,10 +7,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.claim_extraction.models import (
+    ExperienceType,
     ExtractedClaim,
     GroundingAssessment,
     GroundingReasonCode,
     GroundingState,
+    ObservationType,
 )
 from app.evidence_processing.models import EvidenceDocument
 from app.product_resolution.models import ProductResolution
@@ -61,7 +63,12 @@ class EvaluationSnapshot(BaseModel):
     registry_revision: int = Field(ge=0)
     registry_manifest: str = Field(pattern=r"^[0-9a-f]{64}$")
     registry_source_identities: tuple[tuple[str, str], ...]
-    registry_source_provenance: tuple[tuple[str, str, str, str | None], ...]
+    registry_source_provenance: tuple[
+        tuple[
+            str, str, str, str | None, str | None, str | None, tuple[str, ...]
+        ],
+        ...,
+    ]
     product_identity: str = Field(min_length=1)
     sources: tuple[SnapshotSource, ...]
     evidence_documents: tuple[SnapshotEvidenceDocument, ...]
@@ -71,6 +78,15 @@ class EvaluationSnapshot(BaseModel):
     def verified_claims(self) -> tuple[SnapshotClaim, ...]:
         return tuple(item.claim for item in self.grounding_assessments)
 
+
+    @property
+    def claim_manifest(self) -> str:
+        payload = self._digest_payload()["claims"]
+        return sha256(
+            json.dumps(
+                payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
     @model_validator(mode="after")
     def validate_runtime_contract(self) -> "EvaluationSnapshot":
         expected_registry_id = self._registry_id(self.analysis_id)
@@ -97,6 +113,9 @@ class EvaluationSnapshot(BaseModel):
                     source.independence_group_id,
                     source.normalized_url,
                     source.content_hash,
+                    source.copy_fingerprint,
+                    source.dependency_representative_url,
+                    tuple(sorted(source.url_aliases)),
                 )
                 for source in self.sources
             )
@@ -119,16 +138,18 @@ class EvaluationSnapshot(BaseModel):
             raise ValueError("evidence source identity must be unique")
         if not set(document_ids).issubset(source_ids):
             raise ValueError("evidence documents must use snapshot sources")
-        source_groups = {
-            source.source_key: source.independence_group_id
-            for source in self.sources
-        }
+        source_by_id = {source.source_key: source for source in self.sources}
         for document in self.evidence_documents:
-            if (
-                source_groups[document.source_key]
-                != document.independence_group_id
-            ):
+            source = source_by_id[document.source_key]
+            if source.independence_group_id != document.independence_group_id:
                 raise ValueError("evidence document registry identity mismatch")
+            if (
+                source.normalized_url != document.normalized_url
+                or source.domain != document.domain
+                or source.content_hash != document.content_hash
+                or source.independence_state != document.independence_state
+            ):
+                raise ValueError("evidence document provenance mismatch")
         for assessment in self.grounding_assessments:
             if (
                 assessment.state is not GroundingState.VERIFIED
@@ -139,6 +160,21 @@ class EvaluationSnapshot(BaseModel):
                 )
             if assessment.claim.source_id not in document_ids:
                 raise ValueError("verified claim lacks snapshot evidence")
+            relation = assessment.claim.semantic_relation
+            if (
+                relation is None
+                or assessment.semantic_relation != relation
+                or relation.verification_status is not GroundingState.VERIFIED
+                or relation.target_product_id != self.product_identity
+                or relation.evidence_source_id != assessment.claim.source_id
+                or relation.experience_type is not ExperienceType.DIRECT
+                or relation.observation_type is ObservationType.HYPOTHETICAL
+                or " ".join(relation.evidence_quote.casefold().split())
+                != " ".join(
+                    assessment.claim.evidence_fragment.casefold().split()
+                )
+            ):
+                raise ValueError("verified claim lacks a bound semantic relation")
             document = next(
                 item
                 for item in self.evidence_documents
@@ -146,10 +182,21 @@ class EvaluationSnapshot(BaseModel):
             )
             if not document.grounding_eligible:
                 raise ValueError("verified claim uses incomplete evidence")
-            grounding_text = document.grounding_text or document.text
-            if " ".join(assessment.claim.evidence_fragment.casefold().split()) not in (
-                " ".join(grounding_text.casefold().split())
-            ):
+            eligible_texts = (
+                tuple(
+                    segment.text
+                    for segment in document.segments
+                    if segment.complete
+                    and not segment.truncated
+                    and segment.grounding_eligible
+                )
+                if document.segments
+                else (document.grounding_text or document.text,)
+            )
+            fragment = " ".join(
+                assessment.claim.evidence_fragment.casefold().split()
+            )
+            if not any(fragment in " ".join(text.casefold().split()) for text in eligible_texts):
                 raise ValueError("verified claim fragment is outside grounding evidence")
 
         expected_snapshot_id = self._snapshot_id(self._digest_payload())
@@ -195,6 +242,9 @@ class EvaluationSnapshot(BaseModel):
                     source.independence_group_id,
                     source.normalized_url,
                     source.content_hash,
+                    source.copy_fingerprint,
+                    source.dependency_representative_url,
+                    tuple(sorted(source.url_aliases)),
                 )
                 for source in sources
             )
@@ -322,6 +372,9 @@ class EvaluationSnapshot(BaseModel):
                     "normalized_url": source.normalized_url,
                     "domain": source.domain,
                     "content_hash": source.content_hash,
+                    "copy_fingerprint": source.copy_fingerprint,
+                    "dependency_representative_url": source.dependency_representative_url,
+                    "url_aliases": sorted(source.url_aliases),
                     "source_type": source.source_type.value,
                     "independence_group_id": source.independence_group_id,
                     "independence_state": source.independence_state.value,
@@ -334,14 +387,25 @@ class EvaluationSnapshot(BaseModel):
                     "original_url": document.original_url,
                     "normalized_url": document.normalized_url,
                     "text": document.text,
+                    "domain": document.domain,
                     "grounding_text": document.grounding_text,
                     "grounding_eligible": document.grounding_eligible,
                     "content_hash": document.content_hash,
+                    "evidence_coverage_limited": document.evidence_coverage_limited,
+                    "segments": [
+                        segment.model_dump(mode="json")
+                        for segment in document.segments
+                    ],
                     "evidence_source": document.evidence_source.value,
                     "evidence_quality": document.evidence_quality.value,
                     "observation_state": document.observation_state.value,
                     "independence_group_id": document.independence_group_id,
                     "independence_state": document.independence_state.value,
+                    "original_length": document.original_length,
+                    "compressed_length": document.compressed_length,
+                    "compression_ratio": document.compression_ratio,
+                    "truncated": document.truncated,
+                    "content_coverage_ratio": document.content_coverage_ratio,
                 }
                 for document in documents
             ], key=lambda item: item["source_key"]),
@@ -354,6 +418,14 @@ class EvaluationSnapshot(BaseModel):
                     "severity": assessment.claim.severity,
                     "usage_period_months": assessment.claim.usage_period_months,
                     "evidence_fragment": assessment.claim.evidence_fragment,
+                    "semantic_relation": (
+                        assessment.claim.semantic_relation.model_dump(mode="json")
+                        if assessment.claim.semantic_relation is not None else None
+                    ),
+                    "assessment_semantic_relation": (
+                        assessment.semantic_relation.model_dump(mode="json")
+                        if assessment.semantic_relation is not None else None
+                    ),
                     "grounding_state": assessment.state.value,
                     "grounding_reason": assessment.reason_code.value,
                     "metadata_issues": sorted(
@@ -385,7 +457,7 @@ class EvaluationSnapshot(BaseModel):
         analysis_id: str,
         registry_id: str,
         revision: int,
-        provenance: tuple[tuple[str, str, str, str | None], ...],
+        provenance: tuple[tuple[Any, ...], ...],
     ) -> str:
         payload = {
             "analysis_id": analysis_id,

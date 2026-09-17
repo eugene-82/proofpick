@@ -4,7 +4,12 @@ from collections import defaultdict
 from collections.abc import Iterable
 from math import exp
 
+from pydantic import ValidationError
+
 from app.claim_clustering.models import ClaimCluster, ClaimClusteringResult
+from app.claim_clustering.service import SemanticClaimClusterer
+from app.claim_clustering.exceptions import SourceMetadataError
+from app.claim_extraction.models import ObservationType
 from app.evidence_processing.models import EvidenceQuality, ObservationState
 from app.models import ClaimSentiment
 from app.source_filtering.models import FilteredSource, IndependenceState
@@ -32,6 +37,35 @@ class EvidenceConfidenceEngine:
         clustering_result: ClaimClusteringResult,
         sources: Iterable[ConfidenceSourceMetadata | FilteredSource],
     ) -> ConfidenceResult:
+        """Evaluate legacy unbound inputs; snapshot-bound artifacts use evaluate_snapshot."""
+        try:
+            validated_result = ClaimClusteringResult.model_validate(
+                clustering_result.model_dump(mode="python", warnings=False)
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise ConfidenceInputError("invalid cluster result schema") from error
+        lineage_fields = (
+            "analysis_id",
+            "snapshot_id",
+            "product_identity",
+            "registry_id",
+            "registry_revision",
+            "input_snapshot_digest",
+            "input_claim_manifest",
+            "provenance_manifest",
+            "content_digest",
+        )
+        if any(getattr(validated_result, field) is not None for field in lineage_fields):
+            raise ConfidenceInputError(
+                "snapshot-bound clusters require evaluate_snapshot"
+            )
+        return self._evaluate(validated_result, sources)
+
+    def _evaluate(
+        self,
+        clustering_result: ClaimClusteringResult,
+        sources: Iterable[ConfidenceSourceMetadata | FilteredSource],
+    ) -> ConfidenceResult:
         clusters = clustering_result.clusters
         if not clusters:
             return self._empty_result(clustering_result)
@@ -53,11 +87,15 @@ class EvidenceConfidenceEngine:
         used_sources = [source_by_id[source_id] for source_id in used_source_ids]
         self._validate_cluster_provenance(clusters, source_by_id)
         source_count = len(used_sources)
-        independence_groups = {
+        used_group_ids = {
+            source.independence_group_id for source in used_sources
+        }
+        confirmed_registry_groups = {
             source.independence_group_id
-            for source in used_sources
+            for source in source_by_id.values()
             if source.independence_state is IndependenceState.CONFIRMED
         }
+        independence_groups = used_group_ids & confirmed_registry_groups
         domains = {source.domain.casefold() for source in used_sources}
 
         volume = self._saturating(source_count, self._policy.volume_saturation_scale)
@@ -69,9 +107,11 @@ class EvidenceConfidenceEngine:
         )
         agreement = self._agreement_score(clusters)
         long_term, long_term_sources, long_term_groups = self._long_term_score(
-            clusters, source_by_id, len(independence_groups)
+            clusters, source_by_id, independence_groups
         )
-        commercial_risk, commercial_group_count = self._commercial_risk(used_sources)
+        commercial_risk, commercial_group_count = self._commercial_risk(
+            used_sources, independence_groups
+        )
         commercial_penalty = commercial_risk * self._policy.commercial_risk_weight
 
         overall = (
@@ -86,7 +126,9 @@ class EvidenceConfidenceEngine:
         if len(independence_groups) <= 1:
             overall = min(overall, self._policy.single_independent_source_cap)
         overall = self._rounded(overall)
-        quality_issues = self._quality_issues(clusters, used_sources)
+        quality_issues = self._quality_issues(
+            clusters, used_sources, list(source_by_id.values())
+        )
         level = self._level(overall)
         if quality_issues and level is ConfidenceLevel.HIGH:
             level = ConfidenceLevel.MEDIUM
@@ -125,6 +167,7 @@ class EvidenceConfidenceEngine:
     def _quality_issues(
         clusters: list[ClaimCluster],
         sources: list[ConfidenceSourceMetadata],
+        coverage_sources: list[ConfidenceSourceMetadata],
     ) -> list[ConfidenceQualityIssue]:
         issues: list[ConfidenceQualityIssue] = []
         if sources and all(
@@ -140,6 +183,8 @@ class EvidenceConfidenceEngine:
         durability_aspects = {
             "battery", "battery_health", "battery_life", "durability", "reliability"
         }
+        if any(source.evidence_coverage_limited for source in coverage_sources):
+            issues.append(ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE)
         durability_clusters = [
             cluster for cluster in clusters
             if cluster.aspect in durability_aspects
@@ -167,11 +212,17 @@ class EvidenceConfidenceEngine:
     ) -> dict[str, ConfidenceSourceMetadata]:
         lookup: dict[str, ConfidenceSourceMetadata] = {}
         for source in sources:
-            metadata = (
+            raw_metadata = (
                 source
                 if isinstance(source, ConfidenceSourceMetadata)
                 else ConfidenceSourceMetadata.from_filtered_source(source)
             )
+            try:
+                metadata = ConfidenceSourceMetadata.model_validate(
+                    raw_metadata.model_dump(mode="python", warnings=False)
+                )
+            except (AttributeError, TypeError, ValueError, ValidationError) as error:
+                raise ConfidenceInputError("invalid source metadata schema") from error
             if metadata.source_id in lookup:
                 raise ConfidenceInputError(
                     f"duplicate source metadata for {metadata.source_id}"
@@ -184,14 +235,21 @@ class EvidenceConfidenceEngine:
         clusters: list[ClaimCluster],
         source_by_id: dict[str, ConfidenceSourceMetadata],
     ) -> None:
+        confirmed_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state is IndependenceState.CONFIRMED
+        }
+        unknown_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state is IndependenceState.UNKNOWN
+        }
         for cluster in clusters:
             metadata = [source_by_id[source_id] for source_id in cluster.source_ids]
             groups = {source.independence_group_id for source in metadata}
-            confirmed_groups = {
-                source.independence_group_id
-                for source in metadata
-                if source.independence_state is IndependenceState.CONFIRMED
-            }
+            confirmed_groups = groups & confirmed_registry_groups
+            unknown_groups = (groups & unknown_registry_groups) - confirmed_groups
             domains = {source.domain.casefold() for source in metadata}
             if groups != set(cluster.independence_group_ids):
                 raise ConfidenceInputError(
@@ -203,6 +261,14 @@ class EvidenceConfidenceEngine:
             ):
                 raise ConfidenceInputError(
                     f"confirmed independence metadata disagrees with {cluster.cluster_id}"
+                )
+            if (
+                cluster.unknown_independence_group_ids is not None
+                and unknown_groups
+                != set(cluster.unknown_independence_group_ids)
+            ):
+                raise ConfidenceInputError(
+                    f"unknown independence metadata disagrees with {cluster.cluster_id}"
                 )
             if domains != {domain.casefold() for domain in cluster.domains}:
                 raise ConfidenceInputError(
@@ -254,7 +320,7 @@ class EvidenceConfidenceEngine:
         self,
         clusters: list[ClaimCluster],
         source_by_id: dict[str, ConfidenceSourceMetadata],
-        total_group_count: int,
+        confirmed_group_ids: set[str],
     ) -> tuple[float, set[str], set[str]]:
         months_by_source: dict[str, int] = {}
         for cluster in clusters:
@@ -271,9 +337,9 @@ class EvidenceConfidenceEngine:
         months_by_group: dict[str, int] = {}
         for source_id, months in months_by_source.items():
             source = source_by_id[source_id]
-            if source.independence_state is not IndependenceState.CONFIRMED:
-                continue
             group_id = source.independence_group_id
+            if group_id not in confirmed_group_ids:
+                continue
             months_by_group[group_id] = max(months, months_by_group.get(group_id, 0))
 
         if not months_by_group:
@@ -282,6 +348,7 @@ class EvidenceConfidenceEngine:
         absolute = self._saturating(
             group_count, self._policy.long_term_saturation_scale
         )
+        total_group_count = len(confirmed_group_ids)
         coverage = group_count / total_group_count if total_group_count else 0.0
         duration = sum(
             min(months / self._policy.long_term_target_months, 1.0)
@@ -297,11 +364,12 @@ class EvidenceConfidenceEngine:
     @staticmethod
     def _commercial_risk(
         sources: list[ConfidenceSourceMetadata],
+        confirmed_group_ids: set[str],
     ) -> tuple[float, int]:
         signals_by_group: dict[str, list[float]] = defaultdict(list)
         for source in sources:
             if (
-                source.independence_state is IndependenceState.CONFIRMED
+                source.independence_group_id in confirmed_group_ids
                 and source.commercial_signal is not None
             ):
                 signals_by_group[source.independence_group_id].append(
@@ -362,54 +430,93 @@ class EvidenceConfidenceEngine:
             validated = EvaluationSnapshot.validate_boundary(snapshot)
         except SnapshotContractError as error:
             raise ConfidenceInputError(str(error)) from error
-        expected = (
-            validated.analysis_id,
-            validated.snapshot_id,
-            validated.product_identity,
-            validated.registry_id,
-            validated.registry_revision,
-        )
-        actual = (
-            clustering_result.analysis_id,
-            clustering_result.snapshot_id,
-            clustering_result.product_identity,
-            clustering_result.registry_id,
-            clustering_result.registry_revision,
-        )
-        if actual != expected:
-            raise ConfidenceInputError("clusters do not belong to the supplied snapshot")
+        try:
+            validated_clusters = SemanticClaimClusterer.validate_snapshot_result(
+                validated, clustering_result
+            )
+        except SourceMetadataError as error:
+            raise ConfidenceInputError(str(error)) from error
         verified_counts: dict[str, int] = defaultdict(int)
+        relations_by_source: dict[str, list] = defaultdict(list)
         for assessment in validated.grounding_assessments:
             verified_counts[assessment.claim.source_id] += 1
-        metadata = [
-            ConfidenceSourceMetadata.from_evidence_document(
+            relations_by_source[assessment.claim.source_id].append(
+                assessment.semantic_relation
+            )
+        metadata = []
+        for document in validated.evidence_documents:
+            item = ConfidenceSourceMetadata.from_evidence_document(
                 document,
                 verified_claim_count=verified_counts[document.source_key],
                 extracted_claim_count=verified_counts[document.source_key],
             )
-            for document in validated.evidence_documents
-        ]
-        result = self.evaluate(clustering_result, metadata)
-        if any(
-            not document.grounding_eligible
-            for document in validated.evidence_documents
-        ):
-            issues = list(result.quality_issues)
-            if ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE not in issues:
-                issues.append(ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE)
-            level = (
-                ConfidenceLevel.MEDIUM
-                if result.confidence_level is ConfidenceLevel.HIGH
-                else result.confidence_level
-            )
-            result = result.model_copy(
+            item = item.model_copy(
                 update={
-                    "confidence_level": level,
-                    "quality_gate_passed": False,
-                    "quality_issues": issues,
+                    "observation_state": self._semantic_observation_state(
+                        relations_by_source[document.source_key]
+                    )
                 }
             )
-        return result
+            metadata.append(item)
+        result = self._evaluate(validated_clusters, metadata)
+        result = result.model_copy(
+            update={
+                "input_snapshot_digest": validated.snapshot_id,
+                "input_cluster_digest": validated_clusters.content_digest,
+                "provenance_manifest": validated.registry_manifest,
+            }
+        )
+        return result.model_copy(
+            update={"content_digest": result.expected_content_digest()}
+        )
+
+    def validate_snapshot_result(
+        self,
+        snapshot,
+        confidence: ConfidenceResult,
+        clustering_result: ClaimClusteringResult,
+    ) -> ConfidenceResult:
+        """Recompute and compare a snapshot-bound confidence artifact."""
+        try:
+            validated_confidence = ConfidenceResult.model_validate(
+                confidence.model_dump(mode="python", warnings=False)
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise ConfidenceInputError("invalid confidence result schema") from error
+        expected = self.evaluate_snapshot(snapshot, clustering_result)
+        if (
+            validated_confidence.model_dump(mode="json")
+            != expected.model_dump(mode="json")
+        ):
+            raise ConfidenceInputError(
+                "confidence result is not the deterministic snapshot result"
+            )
+        return validated_confidence
+
+    @staticmethod
+    def _semantic_observation_state(relations) -> ObservationState:
+        observed = {
+            ObservationType.USAGE,
+            ObservationType.OWNERSHIP,
+            ObservationType.TEST,
+        }
+        if any(
+            relation is not None
+            and relation.observation_type in observed
+            and relation.observation_months is not None
+            for relation in relations
+        ):
+            return ObservationState.ESTABLISHED
+        if any(
+            relation is not None
+            and (
+                relation.observation_type is ObservationType.FIRST_IMPRESSION
+                or relation.observation_type in observed
+            )
+            for relation in relations
+        ):
+            return ObservationState.FIRST_IMPRESSION
+        return ObservationState.UNKNOWN
 
     @staticmethod
     def _saturating(count: int, scale: float) -> float:

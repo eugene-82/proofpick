@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.claim_extraction.models import ExtractedClaim
+from app.integrity import canonical_digest
 from app.models import ClaimSentiment
 from app.source_filtering.models import IndependenceState
 
@@ -40,3 +41,20 @@ class ClaimClusteringResult(ClusteringModel):
     product_identity: str | None = None
     registry_id: str | None = None
     registry_revision: int | None = Field(default=None, ge=0)
+    input_snapshot_digest: str | None = Field(
+        default=None, pattern=r"^snapshot-[0-9a-f]{16}$"
+    )
+    input_claim_manifest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    provenance_manifest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    def expected_content_digest(self) -> str:
+        return canonical_digest(
+            self.model_dump(
+                mode="json", exclude={"content_digest"}
+            )
+        )

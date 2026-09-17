@@ -1,8 +1,6 @@
-"""Conservative source-copy tracking with final-state reconciliation."""
+"""Exact identity merging and final-state dependency reconciliation."""
 
 from dataclasses import dataclass
-
-from app.reliability import strong_copy
 
 from .models import (
     DropReason,
@@ -11,6 +9,7 @@ from .models import (
     IndependenceState,
     SourceCandidate,
 )
+from .normalizer import SourceNormalizer
 
 
 @dataclass(frozen=True)
@@ -23,18 +22,21 @@ class DuplicateMatch:
 
 
 class SourceDeduplicator:
-    """Delete only URL aliases, exact bodies, and strongly supported copies."""
+    """Merge exact identity only; preserve near-copies in dependency groups."""
 
     def __init__(self, near_duplicate_threshold: float = 0.90) -> None:
         if not 0 <= near_duplicate_threshold <= 1:
             raise ValueError("near_duplicate_threshold must be between 0 and 1")
         self._near_duplicate_threshold = near_duplicate_threshold
-        self._by_url: dict[str, tuple[str, str, bool]] = {}
-        self._by_content_hash: dict[str, tuple[str, str]] = {}
-        self._copy_text_by_key: dict[str, str] = {}
+        self._normalizer = SourceNormalizer()
         self._source_by_key: dict[str, FilteredSource] = {}
         self._active_keys: set[str] = set()
         self._aliases_by_key: dict[str, set[str]] = {}
+        self._copy_text_by_key: dict[str, str] = {}
+        self._declared_state: dict[str, IndependenceState] = {}
+        self._redirects: dict[str, str] = {}
+        self._by_url: dict[str, str] = {}
+        self._by_content_hash: dict[str, str] = {}
 
     def find_duplicate(
         self,
@@ -42,52 +44,49 @@ class SourceDeduplicator:
         content_hash: str | None,
         copy_text: str | None = None,
     ) -> DuplicateMatch | None:
-        if (url_match := self._by_url.get(normalized_url)) is not None:
-            key, group, can_enrich = url_match
+        del copy_text  # Near-copy evidence is preserved and reconciled later.
+        if (key := self._by_url.get(normalized_url)) is not None:
+            source = self.representative(key)
             return DuplicateMatch(
                 DropReason.DUPLICATE_URL,
                 key,
-                group,
-                can_enrich=can_enrich,
+                source.independence_group_id,
+                can_enrich=True,
             )
         if content_hash is not None and (
-            match := self._by_content_hash.get(content_hash)
+            key := self._by_content_hash.get(content_hash)
         ) is not None:
+            source = self.representative(key)
             return DuplicateMatch(
                 DropReason.DUPLICATE_CONTENT,
-                match[0],
-                match[1],
+                key,
+                source.independence_group_id,
+                can_enrich=True,
             )
-        if copy_text:
-            for source_key in sorted(self._active_keys):
-                remembered = self._copy_text_by_key.get(source_key)
-                if remembered and strong_copy(
-                    remembered, copy_text, self._near_duplicate_threshold
-                ):
-                    source = self._source_by_key[source_key]
-                    return DuplicateMatch(
-                        DropReason.NEAR_DUPLICATE_CONTENT,
-                        source.source_key,
-                        source.independence_group_id,
-                    )
         return None
 
-    def remember(self, source: FilteredSource, copy_text: str | None) -> None:
+    def remember(
+        self,
+        source: FilteredSource,
+        copy_text: str | None,
+        *,
+        declared_state: IndependenceState = IndependenceState.UNKNOWN,
+    ) -> None:
         self._source_by_key[source.source_key] = source
         self._active_keys.add(source.source_key)
-        self._aliases_by_key.setdefault(source.source_key, set()).add(
-            source.normalized_url
-        )
-        if copy_text is not None:
+        self._aliases_by_key[source.source_key] = {
+            source.normalized_url,
+            *source.url_aliases,
+        }
+        if copy_text:
             self._copy_text_by_key[source.source_key] = copy_text
-        self._rebuild_indexes()
+        self._declared_state[source.source_key] = declared_state
+        self.reconcile()
 
     def remember_alias(self, normalized_url: str, representative_key: str) -> None:
-        source = self._source_by_key[representative_key]
-        self._aliases_by_key.setdefault(representative_key, set()).update(
-            {normalized_url, source.normalized_url}
-        )
-        self._rebuild_indexes()
+        key = self._canonical_key(representative_key)
+        self._aliases_by_key.setdefault(key, set()).add(normalized_url)
+        self.reconcile()
 
     def enrich(
         self,
@@ -99,131 +98,235 @@ class SourceDeduplicator:
         copy_text: str | None,
         dependency_text: str | None,
         fingerprint,
+        declared_state: IndependenceState = IndependenceState.UNKNOWN,
     ) -> FilteredSource:
-        source = self._source_by_key[representative_key]
-        self._aliases_by_key.setdefault(representative_key, set()).update(
+        del dependency_text, fingerprint
+        key = self._canonical_key(representative_key)
+        source = self._source_by_key[key]
+        self._aliases_by_key.setdefault(key, set()).update(
             {source.normalized_url, normalized_url}
         )
         source.title = self._richer(source.title, candidate.title)
         source.snippet = self._richer(source.snippet, candidate.snippet)
         source.raw_content = self._richer(source.raw_content, candidate.raw_content)
-        if source.published_at is None:
-            source.published_at = candidate.published_at
-        if normalized_url < source.normalized_url:
-            source.original_url = candidate.url or normalized_url
+        source.published_at = self._earlier(
+            source.published_at, candidate.published_at
+        )
+        candidate_original = candidate.url or normalized_url
+        if (
+            normalized_url < source.normalized_url
+            or (
+                normalized_url == source.normalized_url
+                and candidate_original < source.original_url
+            )
+        ):
+            source.original_url = candidate_original
             source.normalized_url = normalized_url
             source.domain = domain
-        final_content = source.raw_content or source.snippet
-        final_copy_text = copy_text if final_content in {candidate.raw_content, candidate.snippet} else None
-        if final_copy_text is None:
-            final_copy_text = self._copy_text_by_key.get(representative_key)
-        final_dependency = dependency_text if final_copy_text == copy_text else None
-        source.content_hash = fingerprint(final_dependency) if final_dependency else source.content_hash
-        if final_copy_text:
-            self._copy_text_by_key[representative_key] = final_copy_text
-        collision = self._find_collision(representative_key, source)
-        if collision is not None:
-            return self._reconcile(representative_key, collision)
-        self._rebuild_indexes()
-        return source
+        final_text = self._normalizer.copy_text(source.raw_content or source.snippet)
+        if final_text:
+            self._copy_text_by_key[key] = final_text
+        source.content_hash = self._normalizer.exact_visible_content_fingerprint(
+            source.raw_content
+        )
+        self._declared_state[key] = self._merge_state(
+            self._declared_state.get(key, IndependenceState.UNKNOWN),
+            declared_state,
+        )
+        self.reconcile()
+        return self.representative(key)
 
     def representative(self, source_key: str) -> FilteredSource:
-        return self._source_by_key[source_key]
+        return self._source_by_key[self._canonical_key(source_key)]
+
     def active_sources(self) -> list[FilteredSource]:
         return sorted(
             (self._source_by_key[key] for key in self._active_keys),
-            key=lambda source: (source.normalized_url, source.content_hash or ""),
+            key=lambda source: (source.normalized_url, source.source_key),
         )
 
-    def _find_collision(
-        self, source_key: str, source: FilteredSource
-    ) -> str | None:
-        text = self._copy_text_by_key.get(source_key)
-        for other_key in sorted(self._active_keys):
-            if other_key == source_key:
-                continue
-            other = self._source_by_key[other_key]
-            if source.content_hash and source.content_hash == other.content_hash:
-                return other_key
-            other_text = self._copy_text_by_key.get(other_key)
-            if text and other_text and strong_copy(
-                text, other_text, self._near_duplicate_threshold
-            ):
-                return other_key
-        return None
+    def reconcile(self) -> None:
+        """Recompute exact representatives and dependency groups from final content."""
+        self._collapse_exact_content()
+        keys = sorted(
+            self._active_keys,
+            key=lambda key: (
+                self._source_by_key[key].normalized_url,
+                key,
+            ),
+        )
+        adjacency = {key: set() for key in keys}
+        for index, left_key in enumerate(keys):
+            for right_key in keys[index + 1 :]:
+                if self._normalizer.containment_copy(
+                    self._copy_text_by_key.get(left_key),
+                    self._copy_text_by_key.get(right_key),
+                    threshold=self._near_duplicate_threshold,
+                ):
+                    adjacency[left_key].add(right_key)
+                    adjacency[right_key].add(left_key)
 
-    def _reconcile(self, left_key: str, right_key: str) -> FilteredSource:
-        left = self._source_by_key[left_key]
-        right = self._source_by_key[right_key]
-        winner = min((left, right), key=lambda item: item.source_key)
-        donor = min(
-            (left, right),
-            key=lambda item: (
-                -(len(item.raw_content or item.snippet or "")),
-                item.normalized_url,
-            ),
+        components: list[list[str]] = []
+        remaining = set(keys)
+        while remaining:
+            root = min(
+                remaining,
+                key=lambda key: (self._source_by_key[key].normalized_url, key),
+            )
+            stack = [root]
+            component: list[str] = []
+            remaining.remove(root)
+            while stack:
+                current = stack.pop()
+                component.append(current)
+                for neighbor in sorted(adjacency[current], reverse=True):
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        stack.append(neighbor)
+            components.append(component)
+        components.sort(
+            key=lambda component: min(
+                self._source_by_key[key].normalized_url for key in component
+            )
         )
-        confirmed = next(
-            (
-                item
-                for item in (left, right)
-                if item.independence_state is IndependenceState.CONFIRMED
-            ),
-            None,
-        )
-        loser = right if winner is left else left
-        winner_url = winner.normalized_url
-        donor_copy_text = self._copy_text_by_key.get(donor.source_key)
-        if winner is not donor:
-            for field in (
-                "original_url",
-                "normalized_url",
-                "domain",
-                "title",
-                "snippet",
-                "raw_content",
-                "published_at",
-                "source_type",
-                "content_hash",
-            ):
-                setattr(winner, field, getattr(donor, field))
-            if donor_copy_text:
-                self._copy_text_by_key[winner.source_key] = donor_copy_text
-        state_source = confirmed or donor
-        winner.independence_state = state_source.independence_state
-        winner.independence_reason_codes = list(
-            state_source.independence_reason_codes
-        )
-        winner.independence_group_id = min(
-            left.independence_group_id, right.independence_group_id
-        )
-        loser.independence_group_id = winner.independence_group_id
-        loser.independence_state = IndependenceState.DEPENDENT
-        loser.independence_reason_codes = [IndependenceReasonCode.DUPLICATE]
-        self._active_keys.discard(loser.source_key)
-        self._aliases_by_key.setdefault(winner.source_key, set()).update(
-            self._aliases_by_key.pop(loser.source_key, set())
-            | {loser.normalized_url, winner_url}
-        )
+        # Public identities describe the final source set, not arrival order.
+        for number, key in enumerate(keys, start=1):
+            self._source_by_key[key].source_key = f"S{number:03d}"
+
+        key_order = {key: self._source_by_key[key].source_key for key in keys}
+
+        for number, component in enumerate(components, start=1):
+            group_id = f"IG{number:03d}"
+            confirmed_keys = [
+                key
+                for key in component
+                if self._declared_state.get(key) is IndependenceState.CONFIRMED
+            ]
+            representative_key = min(
+                confirmed_keys or component,
+                key=lambda key: (
+                    self._source_by_key[key].normalized_url,
+                    key_order[key],
+                ),
+            )
+            group_confirmed = bool(confirmed_keys)
+            representative_url = self._source_by_key[representative_key].normalized_url
+            for key in component:
+                source = self._source_by_key[key]
+                source.independence_group_id = group_id
+                source.dependency_representative_url = representative_url
+                source.copy_fingerprint = self._normalizer.copy_fingerprint(
+                    self._copy_text_by_key.get(key)
+                )
+                source.url_aliases = sorted(self._aliases_by_key.get(key, set()))
+                if len(component) > 1 and key != representative_key:
+                    source.independence_state = IndependenceState.DEPENDENT
+                    source.independence_reason_codes = [
+                        IndependenceReasonCode.POSSIBLE_NEAR_DUPLICATE
+                    ]
+                elif group_confirmed:
+                    source.independence_state = IndependenceState.CONFIRMED
+                    source.independence_reason_codes = [
+                        IndependenceReasonCode.DISTINCT_SUBSTANTIVE_CONTENT
+                    ]
+                elif (
+                    self._declared_state.get(key)
+                    is IndependenceState.DEPENDENT
+                ):
+                    source.independence_state = IndependenceState.DEPENDENT
+                    source.independence_reason_codes = [
+                        IndependenceReasonCode.DUPLICATE
+                    ]
+                else:
+                    source.independence_state = IndependenceState.UNKNOWN
+                    source.independence_reason_codes = [
+                        IndependenceReasonCode.INSUFFICIENT_CONTENT
+                    ]
         self._rebuild_indexes()
-        return winner
+
+    def _collapse_exact_content(self) -> None:
+        groups: dict[str, list[str]] = {}
+        for key in self._active_keys:
+            content_hash = self._source_by_key[key].content_hash
+            if content_hash:
+                groups.setdefault(content_hash, []).append(key)
+        for keys in groups.values():
+            if len(keys) < 2:
+                continue
+            winner = min(
+                keys,
+                key=lambda key: (self._source_by_key[key].normalized_url, key),
+            )
+            for loser in keys:
+                if loser == winner or loser not in self._active_keys:
+                    continue
+                self._merge_exact_source(winner, loser)
+                self._aliases_by_key.setdefault(winner, set()).update(
+                    self._aliases_by_key.pop(loser, set())
+                )
+                self._declared_state[winner] = self._merge_state(
+                    self._declared_state.get(winner, IndependenceState.UNKNOWN),
+                    self._declared_state.get(loser, IndependenceState.UNKNOWN),
+                )
+                self._redirects[loser] = winner
+                self._active_keys.remove(loser)
+
+    def _canonical_key(self, source_key: str) -> str:
+        seen: set[str] = set()
+        while source_key in self._redirects and source_key not in seen:
+            seen.add(source_key)
+            source_key = self._redirects[source_key]
+        return source_key
 
     def _rebuild_indexes(self) -> None:
         self._by_url.clear()
         self._by_content_hash.clear()
         for key in sorted(self._active_keys):
             source = self._source_by_key[key]
-            identity = (source.source_key, source.independence_group_id)
-            self._by_url[source.normalized_url] = (*identity, True)
-            for alias in self._aliases_by_key.get(key, set()):
-                self._by_url[alias] = (*identity, True)
-            if source.content_hash is not None:
-                self._by_content_hash[source.content_hash] = identity
+            for alias in self._aliases_by_key.get(key, {source.normalized_url}):
+                self._by_url[alias] = key
+            if source.content_hash:
+                self._by_content_hash[source.content_hash] = key
+
+    def _merge_exact_source(self, winner: str, loser: str) -> None:
+        retained = self._source_by_key[winner]
+        duplicate = self._source_by_key[loser]
+        retained.title = self._richer(retained.title, duplicate.title)
+        retained.snippet = self._richer(retained.snippet, duplicate.snippet)
+        retained.raw_content = self._richer(
+            retained.raw_content, duplicate.raw_content
+        )
+        retained.published_at = self._earlier(
+            retained.published_at, duplicate.published_at
+        )
+        final_text = self._normalizer.copy_text(
+            retained.raw_content or retained.snippet
+        )
+        if final_text:
+            self._copy_text_by_key[winner] = final_text
+        self._copy_text_by_key.pop(loser, None)
+
+    @staticmethod
+    def _merge_state(
+        left: IndependenceState, right: IndependenceState
+    ) -> IndependenceState:
+        if IndependenceState.CONFIRMED in {left, right}:
+            return IndependenceState.CONFIRMED
+        if IndependenceState.DEPENDENT in {left, right}:
+            return IndependenceState.DEPENDENT
+        return IndependenceState.UNKNOWN
+
+    @staticmethod
+    def _earlier(current, candidate):
+        values = [value for value in (current, candidate) if value is not None]
+        return min(values, key=lambda value: value.isoformat()) if values else None
 
     @staticmethod
     def _richer(current: str | None, candidate: str | None) -> str | None:
-        if candidate is None or not candidate.strip():
-            return current
-        if current is None or len(candidate.strip()) > len(current.strip()):
-            return candidate
-        return current
+        values = [
+            value for value in (current, candidate)
+            if value is not None and value.strip()
+        ]
+        if not values:
+            return None
+        return min(values, key=lambda value: (-len(value.strip()), value.strip()))

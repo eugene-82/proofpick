@@ -1,11 +1,14 @@
 """Deterministic semantic claim clustering with complete provenance."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 
+from pydantic import ValidationError
+
 from app.claim_extraction.models import ExtractedClaim
+from app.integrity import canonical_digest
 from app.source_filtering.models import FilteredSource
 
 from .base import EmbeddingProvider
@@ -103,15 +106,171 @@ class SemanticClaimClusterer:
 
         validated = EvaluationSnapshot.validate_boundary(snapshot)
         result = self.cluster(validated.verified_claims, validated.sources)
-        return result.model_copy(
+        result = result.model_copy(
             update={
                 "analysis_id": validated.analysis_id,
                 "snapshot_id": validated.snapshot_id,
                 "product_identity": validated.product_identity,
                 "registry_id": validated.registry_id,
                 "registry_revision": validated.registry_revision,
+                "input_snapshot_digest": validated.snapshot_id,
+                "input_claim_manifest": validated.claim_manifest,
+                "provenance_manifest": validated.registry_manifest,
             }
         )
+        return result.model_copy(
+            update={"content_digest": result.expected_content_digest()}
+        )
+
+    @staticmethod
+    def validate_snapshot_result(
+        snapshot, result: ClaimClusteringResult
+    ) -> ClaimClusteringResult:
+        """Reject forged or stale cluster artifacts at the next boundary."""
+        try:
+            validated_result = ClaimClusteringResult.model_validate(
+                result.model_dump(mode="python", warnings=False)
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise SourceMetadataError("invalid cluster result schema") from error
+        expected_lineage = (
+            snapshot.analysis_id,
+            snapshot.snapshot_id,
+            snapshot.product_identity,
+            snapshot.registry_id,
+            snapshot.registry_revision,
+            snapshot.snapshot_id,
+            snapshot.claim_manifest,
+            snapshot.registry_manifest,
+        )
+        actual_lineage = (
+            validated_result.analysis_id,
+            validated_result.snapshot_id,
+            validated_result.product_identity,
+            validated_result.registry_id,
+            validated_result.registry_revision,
+            validated_result.input_snapshot_digest,
+            validated_result.input_claim_manifest,
+            validated_result.provenance_manifest,
+        )
+        if actual_lineage != expected_lineage:
+            raise SourceMetadataError("cluster lineage does not match its snapshot")
+        if (
+            validated_result.content_digest
+            != validated_result.expected_content_digest()
+        ):
+            raise SourceMetadataError("cluster content digest mismatch")
+        expected_claims = Counter(
+            canonical_digest(claim) for claim in snapshot.verified_claims
+        )
+        actual_claims = Counter(
+            canonical_digest(member.claim)
+            for cluster in validated_result.clusters
+            for member in cluster.members
+        )
+        if actual_claims != expected_claims:
+            raise SourceMetadataError(
+                "clusters do not cover the verified claim manifest"
+            )
+        source_by_id = SemanticClaimClusterer._source_lookup(snapshot.sources)
+        confirmed_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state.value == "confirmed"
+        }
+        unknown_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state.value == "unknown"
+        }
+        member_ids = [
+            member.claim_id
+            for cluster in validated_result.clusters
+            for member in cluster.members
+        ]
+        expected_ids = {
+            f"C{index:03d}" for index in range(1, len(member_ids) + 1)
+        }
+        if len(member_ids) != len(set(member_ids)) or set(member_ids) != expected_ids:
+            raise SourceMetadataError("cluster member IDs are not canonical")
+        for index, cluster in enumerate(validated_result.clusters, start=1):
+            if cluster.cluster_id != f"CL{index:03d}":
+                raise SourceMetadataError("cluster IDs are not canonical")
+            SemanticClaimClusterer._validate_cluster_aggregate(
+                cluster,
+                source_by_id,
+                confirmed_registry_groups,
+                unknown_registry_groups,
+            )
+        return validated_result
+
+    @staticmethod
+    def _validate_cluster_aggregate(
+        cluster: ClaimCluster,
+        source_by_id: dict[str, FilteredSource],
+        confirmed_registry_groups: set[str],
+        unknown_registry_groups: set[str],
+    ) -> None:
+        source_ids = list(dict.fromkeys(m.claim.source_id for m in cluster.members))
+        group_ids = list(dict.fromkeys(m.independence_group_id for m in cluster.members))
+        confirmed_groups = [
+            group for group in group_ids if group in confirmed_registry_groups
+        ]
+        unknown_groups = [
+            group
+            for group in group_ids
+            if group in unknown_registry_groups
+            and group not in confirmed_registry_groups
+        ]
+        domains = list(
+            dict.fromkeys(source_by_id[source_id].domain for source_id in source_ids)
+        )
+        severities = [m.claim.severity for m in cluster.members]
+        usage_periods = sorted(
+            {
+                member.claim.usage_period_months
+                for member in cluster.members
+                if member.claim.usage_period_months is not None
+            }
+        )
+        for member in cluster.members:
+            normalized_aspect = ASPECT_ALIASES.get(
+                member.claim.aspect, member.claim.aspect
+            )
+            source = source_by_id.get(member.claim.source_id)
+            expected_embedding_key = sha256(
+                f"{normalized_aspect} | {member.claim.claim}".encode("utf-8")
+            ).hexdigest()
+            if (
+                source is None
+                or normalized_aspect != cluster.aspect
+                or member.claim.sentiment is not cluster.sentiment
+                or member.independence_group_id != source.independence_group_id
+                or member.independence_state is not source.independence_state
+                or member.embedding_key != expected_embedding_key
+            ):
+                raise SourceMetadataError(
+                    f"cluster member provenance mismatch: {cluster.cluster_id}"
+                )
+        if (
+            source_ids != cluster.source_ids
+            or cluster.source_count != len(source_ids)
+            or group_ids != cluster.independence_group_ids
+            or confirmed_groups
+            != list(cluster.confirmed_independence_group_ids or ())
+            or unknown_groups
+            != list(cluster.unknown_independence_group_ids or ())
+            or cluster.independent_source_count != len(confirmed_groups)
+            or domains != cluster.domains
+            or cluster.domain_count != len(domains)
+            or abs(cluster.average_severity - sum(severities) / len(severities)) > 1e-9
+            or cluster.max_severity != max(severities)
+            or usage_periods != cluster.usage_period_months
+            or cluster.canonical_claim
+            not in {member.claim.claim for member in cluster.members}
+        ):
+            raise SourceMetadataError(f"cluster aggregate mismatch: {cluster.cluster_id}")
+
 
     @staticmethod
     def _source_lookup(sources: Iterable[FilteredSource]) -> dict[str, FilteredSource]:
@@ -209,20 +368,26 @@ class SemanticClaimClusterer:
         independence_groups = list(
             dict.fromkeys(source.independence_group_id for source in source_metadata)
         )
-        confirmed_groups = list(
-            dict.fromkeys(
-                source.independence_group_id
-                for source in source_metadata
-                if source.independence_state.value == "confirmed"
-            )
-        )
-        unknown_groups = list(
-            dict.fromkeys(
-                source.independence_group_id
-                for source in source_metadata
-                if source.independence_state.value == "unknown"
-            )
-        )
+        confirmed_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state.value == "confirmed"
+        }
+        confirmed_groups = [
+            group for group in independence_groups
+            if group in confirmed_registry_groups
+        ]
+        unknown_registry_groups = {
+            source.independence_group_id
+            for source in source_by_id.values()
+            if source.independence_state.value == "unknown"
+        }
+        unknown_groups = [
+            group
+            for group in independence_groups
+            if group in unknown_registry_groups
+            and group not in confirmed_registry_groups
+        ]
         domains = list(dict.fromkeys(source.domain for source in source_metadata))
         severities = [record.claim.severity for record in records]
         usage_periods = sorted(

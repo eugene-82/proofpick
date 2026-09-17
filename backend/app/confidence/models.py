@@ -3,6 +3,7 @@
 from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 from app.evidence_processing.models import EvidenceDocument, EvidenceQuality, ObservationState
+from app.integrity import canonical_digest
 from app.source_filtering.models import FilteredSource, IndependenceState
 
 class ConfidenceModel(BaseModel):
@@ -30,6 +31,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
     observation_state: ObservationState = ObservationState.UNKNOWN
     verified_claim_count: int = Field(default=0, ge=0)
     extracted_claim_count: int = Field(default=0, ge=0)
+    evidence_coverage_limited: bool = False
 
     @classmethod
     def from_filtered_source(cls, source: FilteredSource) -> "ConfidenceSourceMetadata":
@@ -50,6 +52,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
                    independence_state=document.independence_state,
                    evidence_quality=document.evidence_quality,
                    observation_state=document.observation_state,
+                   evidence_coverage_limited=document.evidence_coverage_limited,
                    verified_claim_count=verified_claim_count,
                    extracted_claim_count=extracted_claim_count)
 
@@ -83,3 +86,18 @@ class ConfidenceResult(ConfidenceModel):
     product_identity: str | None = None
     registry_id: str | None = None
     registry_revision: int | None = Field(default=None, ge=0)
+    input_snapshot_digest: str | None = Field(
+        default=None, pattern=r"^snapshot-[0-9a-f]{16}$"
+    )
+    input_cluster_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    provenance_manifest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    def expected_content_digest(self) -> str:
+        return canonical_digest(
+            self.model_dump(mode="json", exclude={"content_digest"})
+        )

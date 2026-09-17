@@ -48,7 +48,9 @@ def test_openai_provider_uses_json_schema_without_live_network() -> None:
         claim_schema = schema["$defs"]["ExtractedClaim"]
         assert "usage_period_months" in claim_schema["required"]
         assert claim_schema["additionalProperties"] is False
-        request_evidence = json.loads(body["input"])["evidence_documents"][0]
+        request_input = json.loads(body["input"])
+        assert request_input["target_product_id"] == "unspecified-product"
+        request_evidence = request_input["evidence_documents"][0]
         assert request_evidence["source_id"] == "S001"
         assert request_evidence["evidence_source"] == "raw_content"
         return httpx.Response(

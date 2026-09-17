@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 
-CLAIM_EXTRACTION_PROMPT_VERSION = "v1"
+CLAIM_EXTRACTION_PROMPT_VERSION = "v2-semantic-verification"
 
 
 @dataclass(frozen=True)

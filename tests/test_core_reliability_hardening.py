@@ -102,6 +102,11 @@ def claim(
     severity: int = 3,
     aspect: str = "battery",
     months: int | None = None,
+    verification: GroundingState = GroundingState.VERIFIED,
+    experience_type: str = "DIRECT",
+    observation_type: str | None = None,
+    metadata_supported: bool = True,
+    target_product_id: str = "unspecified-product",
 ) -> ExtractedClaim:
     return ExtractedClaim(
         source_id=source_id,
@@ -111,6 +116,21 @@ def claim(
         severity=severity,
         usage_period_months=months,
         evidence_fragment=fragment,
+        semantic_relation={
+            "target_product_id": target_product_id,
+            "subject": aspect,
+            "predicate": text,
+            "polarity": "AFFIRMED",
+            "experiencer": "reviewer",
+            "experience_type": experience_type,
+            "observation_type": observation_type or (
+                "USAGE" if months and metadata_supported else "UNKNOWN"
+            ),
+            "observation_months": months if metadata_supported else None,
+            "evidence_quote": fragment,
+            "evidence_source_id": source_id,
+            "verification_status": verification,
+        },
     )
 
 
@@ -217,9 +237,10 @@ def test_footer_and_html_wrapper_near_copies_are_dependent() -> None:
         ]
     )
 
-    assert len(result.accepted_sources) == 1
-    assert result.dropped_sources[0].reason is DropReason.NEAR_DUPLICATE_CONTENT
-    assert result.dropped_sources[0].duplicate_of == "S001"
+    assert len(result.accepted_sources) == 2
+    assert not result.dropped_sources
+    assert len({source.independence_group_id for source in result.accepted_sources}) == 1
+    assert result.accepted_sources[1].independence_state is IndependenceState.DEPENDENT
 
 
 def test_same_domain_distinct_posts_remain_distinct() -> None:
@@ -279,7 +300,10 @@ def test_incremental_filter_runs_keep_ids_unique_and_reconcile_duplicates() -> N
 
 def test_unsupported_semantic_claim_is_not_verified() -> None:
     payload = ClaimExtractionPayload(
-        claims=[claim("The battery catches fire.", "battery", severity=5)]
+        claims=[claim(
+            "The battery catches fire.", "battery", severity=5,
+            verification=GroundingState.UNCERTAIN,
+        )]
     )
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator().validate_with_assessments(
@@ -288,27 +312,30 @@ def test_unsupported_semantic_claim_is_not_verified() -> None:
 
     assessment = error.value.assessments[0]
     assert assessment.state is not GroundingState.VERIFIED
-    assert assessment.reason_code in {
-        GroundingReasonCode.TINY_FRAGMENT,
-        GroundingReasonCode.CLAIM_NOT_SUPPORTED,
-    }
+    assert assessment.reason_code is GroundingReasonCode.SEMANTIC_UNCERTAIN
 
 
 def test_negation_reversal_is_rejected() -> None:
     payload = ClaimExtractionPayload(
-        claims=[claim("The battery is dangerous.", "battery is not dangerous")]
+        claims=[claim(
+            "The battery is dangerous.", "battery is not dangerous",
+            verification=GroundingState.REJECTED,
+        )]
     )
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator().validate_with_assessments(
             payload, [document("The battery is not dangerous after extended use.")]
         )
 
-    assert error.value.assessments[0].reason_code is GroundingReasonCode.NEGATION_MISMATCH
+    assert error.value.assessments[0].reason_code is GroundingReasonCode.SEMANTIC_REJECTED
 
 
 def test_uncertain_claim_is_excluded_when_valid_claim_exists() -> None:
     valid = claim("The battery failed after six months", "battery failed after six months")
-    uncertain = claim("The battery catches fire", "battery lasts all day", severity=5)
+    uncertain = claim(
+        "The battery catches fire", "battery lasts all day", severity=5,
+        verification=GroundingState.UNCERTAIN,
+    )
     payload, assessments = ClaimGroundingValidator().validate_with_assessments(
         ClaimExtractionPayload(claims=[valid, uncertain]),
         [document("The battery failed after six months. The battery lasts all day.")],
@@ -355,12 +382,15 @@ def test_indirect_speculative_or_tiny_evidence_is_not_verified(
 ) -> None:
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator().validate(
-            ClaimExtractionPayload(claims=[claim(claim_text, fragment)]),
+            ClaimExtractionPayload(claims=[claim(
+                claim_text, fragment,
+                verification=GroundingState.REJECTED,
+            )]),
             [document(source_text)],
         )
 
     assert error.value.assessments[0].state is not GroundingState.VERIFIED
-    assert error.value.assessments[0].reason_code is reason
+    assert error.value.assessments[0].reason_code is GroundingReasonCode.SEMANTIC_REJECTED
 
 
 def test_real_usage_sentence_is_grounded_beside_marketing_copy() -> None:
@@ -388,7 +418,12 @@ def test_warranty_and_decimal_are_not_usage_duration_metadata() -> None:
     ]:
         payload, assessments = validator.validate_with_assessments(
             ClaimExtractionPayload(
-                claims=[claim(fragment, fragment, sentiment="neutral", months=12 if "Warranty" in text else 6)]
+                claims=[claim(
+                    fragment, fragment, sentiment="neutral",
+                    months=12 if "Warranty" in text else 6,
+                    observation_type=("WARRANTY" if "Warranty" in text else "USAGE"),
+                    metadata_supported=False,
+                )]
             ),
             [document(text)],
         )
@@ -414,14 +449,17 @@ def test_korean_usage_duration_is_grounded(text: str, fragment: str, months: int
 def test_previous_generation_evidence_is_rejected() -> None:
     target = DeterministicProductResolver().resolve("AirPods Pro 2")
     payload = ClaimExtractionPayload(
-        claims=[claim("AirPods Pro 1 battery failed", "AirPods Pro 1 battery failed")]
+        claims=[claim(
+            "AirPods Pro 1 battery failed", "AirPods Pro 1 battery failed",
+            target_product_id="AirPods Pro 1",
+        )]
     )
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator(target).validate(
             payload, [document("AirPods Pro 1 battery failed after six months.")]
         )
 
-    assert error.value.assessments[0].reason_code is GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+    assert error.value.assessments[0].reason_code is GroundingReasonCode.VERIFICATION_BINDING_MISMATCH
 
 
 def test_product_identity_guards_accessory_comparison_tracking_and_suffixes() -> None:

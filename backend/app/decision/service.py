@@ -4,7 +4,9 @@ from collections import defaultdict
 from collections.abc import Iterable
 
 from app.claim_clustering.models import ClaimCluster, ClaimClusteringResult
+from app.confidence.exceptions import ConfidenceInputError
 from app.confidence.models import ConfidenceLevel, ConfidenceResult
+from app.confidence.service import EvidenceConfidenceEngine
 from app.models import ClaimSentiment, PurchaseDecision
 from app.source_filtering.models import IndependenceState
 
@@ -14,12 +16,42 @@ from .policy import DecisionPolicy
 
 
 class PurchaseDecisionEngine:
-    def __init__(self, policy: DecisionPolicy = DecisionPolicy()) -> None:
+    def __init__(
+        self,
+        policy: DecisionPolicy = DecisionPolicy(),
+        confidence_engine: EvidenceConfidenceEngine | None = None,
+    ) -> None:
         self._policy = policy
+        self._confidence_engine = confidence_engine or EvidenceConfidenceEngine()
 
-    def evaluate(self, confidence: ConfidenceResult,
-                 clustering_result: ClaimClusteringResult) -> PurchaseDecisionResult:
-        self._validate_snapshot_contract(confidence, clustering_result)
+    def evaluate(
+        self,
+        confidence: ConfidenceResult,
+        clustering_result: ClaimClusteringResult,
+    ) -> PurchaseDecisionResult:
+        """Evaluate legacy unbound inputs; bound artifacts require evaluate_snapshot."""
+        fields = (
+            "analysis_id",
+            "snapshot_id",
+            "product_identity",
+            "registry_id",
+            "registry_revision",
+        )
+        if any(
+            getattr(item, field) is not None
+            for item in (confidence, clustering_result)
+            for field in fields
+        ):
+            raise DecisionInputError(
+                "snapshot-bound artifacts require evaluate_snapshot"
+            )
+        return self._evaluate(confidence, clustering_result)
+
+    def _evaluate(
+        self,
+        confidence: ConfidenceResult,
+        clustering_result: ClaimClusteringResult,
+    ) -> PurchaseDecisionResult:
         clusters = clustering_result.clusters
         negative = [c for c in clusters if c.sentiment is ClaimSentiment.NEGATIVE]
         blocking = self._sorted_signals(
@@ -91,6 +123,8 @@ class PurchaseDecisionEngine:
         confidence: ConfidenceResult,
         clustering_result: ClaimClusteringResult,
     ) -> PurchaseDecisionResult:
+        from app.claim_clustering.exceptions import SourceMetadataError
+        from app.claim_clustering.service import SemanticClaimClusterer
         from app.claim_clustering.snapshot import (
             EvaluationSnapshot,
             SnapshotContractError,
@@ -98,27 +132,19 @@ class PurchaseDecisionEngine:
 
         try:
             validated = EvaluationSnapshot.validate_boundary(snapshot)
-        except SnapshotContractError as error:
+            validated_clusters = SemanticClaimClusterer.validate_snapshot_result(
+                validated, clustering_result
+            )
+            validated_confidence = self._confidence_engine.validate_snapshot_result(
+                validated, confidence, validated_clusters
+            )
+        except (
+            SnapshotContractError,
+            SourceMetadataError,
+            ConfidenceInputError,
+        ) as error:
             raise DecisionInputError(str(error)) from error
-        expected = (
-            validated.analysis_id,
-            validated.snapshot_id,
-            validated.product_identity,
-            validated.registry_id,
-            validated.registry_revision,
-        )
-        fields = (
-            "analysis_id",
-            "snapshot_id",
-            "product_identity",
-            "registry_id",
-            "registry_revision",
-        )
-        if tuple(getattr(confidence, field) for field in fields) != expected:
-            raise DecisionInputError("confidence does not belong to the supplied snapshot")
-        if tuple(getattr(clustering_result, field) for field in fields) != expected:
-            raise DecisionInputError("clusters do not belong to the supplied snapshot")
-        return self.evaluate(confidence, clustering_result)
+        return self._evaluate(validated_confidence, validated_clusters)
     @staticmethod
     def _result(decision, confidence, reasons, unresolved, *, blocking=None,
                 conditions=None, supporting=None, sufficient=False):
@@ -130,17 +156,6 @@ class PurchaseDecisionEngine:
             should_find_alternatives=decision is PurchaseDecision.SKIP,
         )
 
-    @staticmethod
-    def _validate_snapshot_contract(confidence, clustering):
-        fields = ("analysis_id", "snapshot_id", "product_identity",
-                  "registry_id", "registry_revision")
-        confidence_values = tuple(getattr(confidence, field) for field in fields)
-        clustering_values = tuple(getattr(clustering, field) for field in fields)
-        if any(value is not None for value in confidence_values + clustering_values):
-            if any(value is None for value in confidence_values + clustering_values):
-                raise DecisionInputError("snapshot identity must be complete on both inputs")
-            if confidence_values != clustering_values:
-                raise DecisionInputError("confidence and clusters belong to different snapshots")
 
     def _insufficiency_reasons(self, confidence, clusters):
         reasons = []

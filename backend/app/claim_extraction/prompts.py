@@ -24,6 +24,19 @@ Rules:
 - usage_period_months is an integer only when the source explicitly states an equivalent
   whole-month or whole-year duration. Use null for vague durations or periods under one month.
 - Do not paraphrase evidence_fragment, invent facts, or force a claim when none is useful.
+- For every claim, return semantic_relation as the provider's explicit verdict. Bind it to
+  the exact target_product_id, evidence_source_id, and evidence_quote. Use
+  target_product_id="unspecified-product" when no resolved identity was supplied.
+- subject and predicate must describe the same clause-local relation as the claim; do not
+  transfer a predicate from an accessory, comparison product, or nearby entity.
+- polarity, experiencer, experience_type, observation_type, and verification_status must be
+  explicit. Use UNCERTAIN instead of guessing an ambiguous pronoun or product relation.
+- VERIFIED is allowed only for a direct observation of the target relation. Speculation,
+  marketing, and reported experience remain UNCERTAIN or REJECTED.
+- Only USAGE, OWNERSHIP, or TEST may carry long-term observation_months. Warranty,
+  subscription, return-period, hypothetical, and first-impression periods do not establish it.
+- semantic_relation.evidence_quote must exactly equal evidence_fragment and its
+  evidence_source_id must exactly equal source_id.
 - Multiple claims from one source and an empty claims list are both valid.
 """.strip()
 
@@ -31,5 +44,6 @@ Rules:
 REPAIR_INSTRUCTION = """
 The previous output failed schema or source-grounding validation. Return a corrected structured
 payload only. Remove claims that cannot use a valid input source_id, a verbatim source fragment,
-or an explicitly supported usage period.
+or an explicitly supported usage period. Re-evaluate every repaired candidate through the same
+semantic relation contract; repair never relaxes semantic verification.
 """.strip()

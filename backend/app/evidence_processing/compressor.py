@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 
+from .models import EvidenceSegment
 from .policy import EvidenceBudgetPolicy
 
 
@@ -33,6 +34,8 @@ class CompressionResult:
     truncated: bool
     grounding_text: str | None
     grounding_eligible: bool
+    segments: tuple[EvidenceSegment, ...]
+    evidence_coverage_limited: bool
 
 
 class EvidenceCompressor:
@@ -44,15 +47,29 @@ class EvidenceCompressor:
     def compress(self, text: str) -> CompressionResult:
         limit = self._policy.max_chars_per_source
         if len(text) <= limit:
-            return CompressionResult(text, False, text, True)
+            return CompressionResult(
+                text, False, text, True,
+                (EvidenceSegment(
+                    text=text, complete=True, truncated=False,
+                    grounding_eligible=True,
+                    original_start=0, original_end=len(text),
+                ),),
+                False,
+            )
         units = [
             part.strip()
             for part in SENTENCE_SPLIT_PATTERN.split(text)
             if part.strip()
         ]
         if len(units) <= 1:
+            excerpt = self._bounded_single_unit(text, limit)
             return CompressionResult(
-                self._bounded_single_unit(text, limit), True, None, False
+                excerpt, True, None, False,
+                (EvidenceSegment(
+                    text=excerpt, complete=False, truncated=True,
+                    grounding_eligible=False,
+                ),),
+                True,
             )
 
         mandatory = {0, len(units) // 2, len(units) - 1}
@@ -76,11 +93,20 @@ class EvidenceCompressor:
                 if len(units[index]) <= quota
             ]
             grounding_text = " ".join(grounding_units) or None
+            segments = tuple(
+                EvidenceSegment(
+                    text=section,
+                    complete=len(units[index]) <= quota,
+                    truncated=len(units[index]) > quota,
+                    grounding_eligible=len(units[index]) <= quota,
+                )
+                for index, quota, section in zip(
+                    ordered_mandatory, quotas, sections, strict=True
+                )
+            )
             return CompressionResult(
-                " ".join(sections).rstrip(),
-                True,
-                grounding_text,
-                grounding_text is not None,
+                " ".join(sections).rstrip(), True, grounding_text,
+                grounding_text is not None, segments, True,
             )
 
         selected = set(ordered_mandatory)
@@ -93,7 +119,16 @@ class EvidenceCompressor:
                 selected.add(index)
                 used += needed
         result = " ".join(units[index] for index in sorted(selected))
-        return CompressionResult(result.rstrip(), True, result.rstrip(), True)
+        segments = tuple(
+            EvidenceSegment(
+                text=units[index], complete=True, truncated=False,
+                grounding_eligible=True,
+            )
+            for index in sorted(selected)
+        )
+        return CompressionResult(
+            result.rstrip(), True, result.rstrip(), True, segments, True
+        )
 
     @staticmethod
     def _quotas(total: int, count: int) -> list[int]:

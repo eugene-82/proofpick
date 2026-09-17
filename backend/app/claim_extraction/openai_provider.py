@@ -56,6 +56,7 @@ class OpenAIClaimExtractionProvider(ClaimExtractionProvider):
         documents: Sequence[EvidenceDocument],
         *,
         repair: bool = False,
+        target_product_id: str = "unspecified-product",
     ) -> Any:
         evidence = [
             {
@@ -73,7 +74,13 @@ class OpenAIClaimExtractionProvider(ClaimExtractionProvider):
         request_body = {
             "model": self._model,
             "instructions": instructions,
-            "input": json.dumps({"evidence_documents": evidence}, ensure_ascii=False),
+            "input": json.dumps(
+                {
+                    "target_product_id": target_product_id,
+                    "evidence_documents": evidence,
+                },
+                ensure_ascii=False,
+            ),
             "text": {
                 "format": {
                     "type": "json_schema",

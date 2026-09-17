@@ -48,7 +48,13 @@ class FakeClaimProvider(ClaimExtractionProvider):
         self.responses = responses
         self.repairs: list[bool] = []
 
-    def extract_batch(self, documents, *, repair: bool = False):
+    def extract_batch(
+        self,
+        documents,
+        *,
+        repair: bool = False,
+        target_product_id: str = "unspecified-product",
+    ):
         self.repairs.append(repair)
         return self.responses.pop(0)
 
@@ -69,17 +75,23 @@ def _ground(item: ExtractedClaim, text: str):
 
 def test_charger_beside_battery_subject_attack_is_blocked() -> None:
     text = "The charger beside the battery suddenly caught fire."
-    item = claim("The battery caught fire.", text, severity=5)
+    item = claim(
+        "The battery caught fire.", text, severity=5,
+        verification=GroundingState.REJECTED,
+    )
     with pytest.raises(ClaimGroundingError) as error:
         _ground(item, text)
     assert error.value.assessments[0].reason_code is (
-        GroundingReasonCode.SUBJECT_PREDICATE_MISMATCH
+        GroundingReasonCode.SEMANTIC_REJECTED
     )
 
 
 def test_repair_cannot_promote_subject_attack() -> None:
     text = "The charger beside the battery suddenly caught fire."
-    short = claim("The battery caught fire.", "caught fire", severity=5)
+    short = claim(
+        "The battery caught fire.", "caught fire", severity=5,
+        verification=GroundingState.REJECTED,
+    )
     repaired = short.model_copy(update={"evidence_fragment": text})
     provider = FakeClaimProvider(
         [
@@ -106,7 +118,10 @@ def test_clear_pronoun_antecedent_is_preserved() -> None:
 
 def test_ambiguous_pronoun_is_not_verified() -> None:
     text = "The charger was beside the battery. It failed completely."
-    item = claim("It failed completely.", "It failed completely.", severity=5)
+    item = claim(
+        "It failed completely.", "It failed completely.", severity=5,
+        verification=GroundingState.UNCERTAIN,
+    )
     with pytest.raises(ClaimGroundingError):
         _ground(item, text)
 
@@ -134,6 +149,10 @@ def test_usage_metadata_failure_keeps_severe_claim_core() -> None:
         severity=5,
         months=12,
     )
+    item = item.model_copy(update={
+        "semantic_relation": item.semantic_relation.model_copy(
+            update={"observation_months": 6}
+        )})
     payload, assessments = ClaimGroundingValidator().validate_with_assessments(
         ClaimExtractionPayload(claims=[item]),
         [document("I used it for 6 months. The battery failed completely.")],
@@ -155,9 +174,10 @@ def test_copy_with_long_footer_does_not_become_independent() -> None:
         for index in range(4)
     ]
     result = DeterministicSourceFilter().filter(inputs)
-    assert len(result.accepted_sources) == 1
-    assert result.accepted_sources[0].independence_state is IndependenceState.UNKNOWN
-    assert len(result.dropped_sources) == 3
+    assert len(result.accepted_sources) == 4
+    assert not result.dropped_sources
+    assert len({source.independence_group_id for source in result.accepted_sources}) == 1
+    assert sum(source.independence_state is IndependenceState.CONFIRMED for source in result.accepted_sources) <= 1
 
 
 @pytest.mark.parametrize(
@@ -374,6 +394,7 @@ def test_non_durability_full_evidence_can_still_buy() -> None:
 
 
 def _build_snapshot(*, severity: int = 5, analysis_id: str = "analysis-011c"):
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
     registry = SourceIdentityRegistry(analysis_id=analysis_id)
     sources = DeterministicSourceFilter(registry=registry).filter(
         [
@@ -392,14 +413,15 @@ def _build_snapshot(*, severity: int = 5, analysis_id: str = "analysis-011c"):
     item = claim(
         "The battery failed completely.",
         "The battery failed completely.",
+        target_product_id=product.canonical_name,
         severity=severity,
     )
-    _, assessments = ClaimGroundingValidator().validate_with_assessments(
+    _, assessments = ClaimGroundingValidator(product).validate_with_assessments(
         ClaimExtractionPayload(claims=[item]), evidence
     )
     snapshot = EvaluationSnapshot.create(
         analysis_id=analysis_id,
-        product=DeterministicProductResolver().resolve("AirPods Pro 2"),
+        product=product,
         registry=registry,
         sources=sources,
         evidence_documents=evidence,
@@ -464,6 +486,6 @@ def test_valid_snapshot_still_supports_clustering_confidence_and_decision() -> N
         snapshot
     )
     confidence = EvidenceConfidenceEngine().evaluate_snapshot(snapshot, clustered)
-    decision = PurchaseDecisionEngine().evaluate(confidence, clustered)
+    decision = PurchaseDecisionEngine().evaluate_snapshot(snapshot, confidence, clustered)
     assert clustered.snapshot_id == snapshot.snapshot_id
     assert decision.unresolved_risks

@@ -139,7 +139,7 @@ def test_invalid_and_completely_empty_results_are_traceable_drops() -> None:
         ]
     )
 
-    assert [source.source_key for source in result.accepted_sources] == ["S003"]
+    assert [source.source_key for source in result.accepted_sources] == ["S001"]
     assert [source.reason for source in result.dropped_sources] == [
         DropReason.INVALID_URL,
         DropReason.EMPTY_CONTENT,
@@ -156,7 +156,7 @@ def test_input_order_is_preserved_after_mixed_drops() -> None:
         ]
     )
 
-    assert [source.source_key for source in result.accepted_sources] == ["S001", "S003"]
+    assert [source.source_key for source in result.accepted_sources] == ["S001", "S002"]
     assert [source.source_key for source in result.dropped_sources] == ["S002", "S004"]
 
 

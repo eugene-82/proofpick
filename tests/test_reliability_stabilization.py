@@ -57,7 +57,9 @@ class FakeClaimProvider(ClaimExtractionProvider):
         self.repairs: list[bool] = []
 
     def extract_batch(self, documents: Sequence[EvidenceDocument], *,
-                      repair: bool = False) -> object:
+                      repair: bool = False,
+                      target_product_id: str = "unspecified-product",
+                      ) -> object:
         self.repairs.append(repair)
         return self.responses.pop(0)
 
@@ -84,10 +86,29 @@ def document(text: str, source_id: str = "S001", group_id: str = "IG001") -> Evi
 
 def claim(text: str, fragment: str, *, source_id: str = "S001",
           sentiment: str = "negative", severity: int = 3,
-          aspect: str = "battery", months: int | None = None) -> ExtractedClaim:
+          aspect: str = "battery", months: int | None = None,
+          verification: GroundingState = GroundingState.VERIFIED,
+          experience_type: str = "DIRECT",
+          observation_type: str | None = None,
+          target_product_id: str = "unspecified-product") -> ExtractedClaim:
     return ExtractedClaim(
         source_id=source_id, aspect=aspect, claim=text, sentiment=sentiment,
         severity=severity, usage_period_months=months, evidence_fragment=fragment,
+        semantic_relation={
+            "target_product_id": target_product_id,
+            "subject": aspect,
+            "predicate": text,
+            "polarity": "AFFIRMED",
+            "experiencer": "reviewer",
+            "experience_type": experience_type,
+            "observation_type": (
+                observation_type or ("USAGE" if months else "UNKNOWN")
+            ),
+            "observation_months": months,
+            "evidence_quote": fragment,
+            "evidence_source_id": source_id,
+            "verification_status": verification,
+        },
     )
 
 
@@ -105,24 +126,27 @@ def candidate(url: str, text: str | None, *, snippet: str | None = None) -> Sour
 def test_subject_attack_with_auxiliary_or_adverb_is_rejected(
     source_text: str, claim_text: str
 ) -> None:
-    item = claim(claim_text, source_text)
+    item = claim(
+        claim_text, source_text, verification=GroundingState.REJECTED
+    )
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator().validate(
             ClaimExtractionPayload(claims=[item]), [document(source_text)]
         )
     assert error.value.assessments[0].reason_code is (
-        GroundingReasonCode.SUBJECT_PREDICATE_MISMATCH
+        GroundingReasonCode.SEMANTIC_REJECTED
     )
 
 def test_charger_subject_attack_and_repair_bypass_are_rejected() -> None:
     source = "The charger caught fire beside the battery."
-    unsupported = claim("The battery caught fire.", "The charger caught fire beside the battery.",
-                        severity=5)
+    unsupported = claim(
+        "The battery caught fire.", source, severity=5,
+        verification=GroundingState.REJECTED)
     with pytest.raises(ClaimGroundingError) as error:
         ClaimGroundingValidator().validate(
             ClaimExtractionPayload(claims=[unsupported]), [document(source)]
         )
-    assert error.value.assessments[0].reason_code is GroundingReasonCode.SUBJECT_PREDICATE_MISMATCH
+    assert error.value.assessments[0].reason_code is GroundingReasonCode.SEMANTIC_REJECTED
 
     short = unsupported.model_copy(update={"evidence_fragment": "caught fire"})
     provider = FakeClaimProvider([
@@ -155,6 +179,10 @@ def test_normal_positive_and_severe_negative_grounding_survive(text, item) -> No
 
 def test_usage_metadata_failure_does_not_discard_claim_core() -> None:
     item = claim("The battery failed completely.", "The battery failed completely.", months=12)
+    item = item.model_copy(update={
+        "semantic_relation": item.semantic_relation.model_copy(
+            update={"observation_months": 6}
+        )})
     payload, assessments = ClaimGroundingValidator().validate_with_assessments(
         ClaimExtractionPayload(claims=[item]),
         [document("I used it for 6 months. The battery failed completely.")],
@@ -304,13 +332,17 @@ def _snapshot_fixture():
                   "I used it for six months. The battery failed completely.")
     ]).accepted_sources
     documents = DeterministicEvidenceProcessor().process_all(sources)
-    item = claim("The battery failed completely.", "The battery failed completely.")
-    _, assessments = ClaimGroundingValidator().validate_with_assessments(
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    item = claim(
+        "The battery failed completely.", "The battery failed completely.",
+        target_product_id=product.canonical_name,
+    )
+    _, assessments = ClaimGroundingValidator(product).validate_with_assessments(
         ClaimExtractionPayload(claims=[item]), documents
     )
     snapshot = EvaluationSnapshot.create(
         analysis_id="analysis-1",
-        product=DeterministicProductResolver().resolve("AirPods Pro 2"),
+        product=product,
         registry=registry, sources=sources, evidence_documents=documents,
         grounding_assessments=assessments,
     )

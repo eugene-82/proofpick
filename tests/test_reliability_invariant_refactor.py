@@ -9,6 +9,8 @@ from app.claim_extraction import (
     ClaimExtractionPayload,
     ClaimGroundingError,
     ClaimGroundingValidator,
+    ClaimVerificationProvider,
+    ClaimVerificationVerdict,
     GroundingReasonCode,
     GroundingState,
 )
@@ -25,7 +27,7 @@ from app.evidence_processing import (
     EvidenceQuality,
     ObservationState,
 )
-from app.models import PurchaseDecision
+from app.models import ClaimSentiment, PurchaseDecision
 from app.product_resolution import DeterministicProductResolver
 from app.search import SearchResult
 from app.source_filtering import (
@@ -43,8 +45,14 @@ from tests.test_reliability_stabilization import claim, document
 from app.claim_clustering import ClaimClusteringResult
 
 
-def _ground(source: str, claim_text: str):
-    item = claim(claim_text, source, severity=5)
+def _ground(
+    source: str,
+    claim_text: str,
+    verification: GroundingState = GroundingState.VERIFIED,
+):
+    item = claim(
+        claim_text, source, severity=5, verification=verification
+    )
     return ClaimGroundingValidator().validate(
         ClaimExtractionPayload(claims=[item]), [document(source)]
     )
@@ -61,9 +69,13 @@ def test_clause_local_relation_blocks_subordinate_or_possessive_subject(
     source: str,
 ) -> None:
     with pytest.raises(ClaimGroundingError) as error:
-        _ground(source, "The battery caught fire.")
+        _ground(
+            source,
+            "The battery caught fire.",
+            GroundingState.REJECTED,
+        )
     assert error.value.assessments[0].reason_code is (
-        GroundingReasonCode.SUBJECT_PREDICATE_MISMATCH
+        GroundingReasonCode.SEMANTIC_REJECTED
     )
 
 
@@ -88,13 +100,20 @@ def test_pronoun_requires_one_local_antecedent() -> None:
         _ground(
             "The charger and battery were warm. It failed completely.",
             "It failed completely.",
+            GroundingState.UNCERTAIN,
         )
 
 
 def test_repair_cannot_relax_clause_relation() -> None:
     source = "The battery was damaged when the charger caught fire."
-    short = claim("The battery caught fire.", "caught fire", severity=5)
-    repaired = short.model_copy(update={"evidence_fragment": source})
+    short = claim(
+        "The battery caught fire.", "caught fire", severity=5,
+        verification=GroundingState.REJECTED,
+    )
+    repaired = claim(
+        "The battery caught fire.", source, severity=5,
+        verification=GroundingState.REJECTED,
+    )
     from tests.test_reliability_correctness import FakeClaimProvider
     from app.claim_extraction import StructuredClaimExtractor
 
@@ -154,8 +173,15 @@ def test_original_body_with_footer_variants_is_one_support_group() -> None:
             for index in range(4)
         ]
     )
-    assert len(result.accepted_sources) == 1
-    assert len(result.dropped_sources) == 3
+    assert len(result.accepted_sources) == 4
+    assert result.dropped_sources == []
+    assert len(
+        {source.independence_group_id for source in result.accepted_sources}
+    ) == 1
+    assert sum(
+        source.independence_state is IndependenceState.CONFIRMED
+        for source in result.accepted_sources
+    ) <= 1
 
 
 def test_search_result_has_structural_confirmed_route_without_length_rule() -> None:
@@ -225,10 +251,11 @@ def test_registry_final_state_converges_for_all_enrichment_orders() -> None:
     orders = tuple(permutations(("copy", "canonical_short", "canonical_rich")))
     states = [_registry_semantics(order) for order in orders]
     assert all(state == states[0] for state in states)
-    assert len(states[0]) == 1
-    assert states[0][0][0] == "S001"
+    assert len(states[0]) == 2
+    assert [item[0] for item in states[0]] == ["S001", "S002"]
     assert states[0][0][1] == "https://a.example/review"
     assert "dangerously hot" in (states[0][0][2] or "")
+    assert len({item[4] for item in states[0]}) == 1
 
 
 def test_all_at_once_and_incremental_ingestion_converge() -> None:
@@ -245,6 +272,7 @@ def test_arrival_permutations_converge_through_decision() -> None:
         registry = _ingested_registry(order)
         sources = registry.retained_sources()
         documents = DeterministicEvidenceProcessor().process_all(sources)
+        product = DeterministicProductResolver().resolve("AirPods Pro 2")
         item = claim(
             "The battery failed completely.",
             "The battery failed completely.",
@@ -252,13 +280,16 @@ def test_arrival_permutations_converge_through_decision() -> None:
             sentiment="negative",
             severity=5,
             months=6,
+            target_product_id=product.canonical_name,
         )
-        _, assessments = ClaimGroundingValidator().validate_with_assessments(
+        _, assessments = ClaimGroundingValidator(
+            product
+        ).validate_with_assessments(
             ClaimExtractionPayload(claims=[item]), documents
         )
         snapshot = EvaluationSnapshot.create(
             analysis_id=registry.analysis_id,
-            product=DeterministicProductResolver().resolve("AirPods Pro 2"),
+            product=product,
             registry=registry,
             sources=sources,
             evidence_documents=documents,
@@ -343,6 +374,7 @@ def test_unsafe_partial_severe_evidence_blocks_positive_only_buy() -> None:
     positive_documents = [
         item for item in documents if item.domain.startswith("positive-")
     ]
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
     claims = [
         claim(
             "The battery worked reliably.",
@@ -350,15 +382,18 @@ def test_unsafe_partial_severe_evidence_blocks_positive_only_buy() -> None:
             source_id=item.source_key,
             sentiment="positive",
             severity=1,
+            target_product_id=product.canonical_name,
         )
         for item in positive_documents
     ]
-    _, assessments = ClaimGroundingValidator().validate_with_assessments(
+    _, assessments = ClaimGroundingValidator(
+        product
+    ).validate_with_assessments(
         ClaimExtractionPayload(claims=claims), documents
     )
     snapshot = EvaluationSnapshot.create(
         analysis_id=registry.analysis_id,
-        product=DeterministicProductResolver().resolve("AirPods Pro 2"),
+        product=product,
         registry=registry,
         sources=sources,
         evidence_documents=documents,
@@ -378,17 +413,22 @@ def test_unsafe_partial_severe_evidence_blocks_positive_only_buy() -> None:
 
 
 def test_first_day_and_warranty_stays_first_impression() -> None:
-    filtered = DeterministicSourceFilter().filter(
-        [
-            SourceCandidate(
-                url="https://review.example/first-day",
-                raw_content="I used it today and the warranty lasts for 12 months.",
-            )
-        ]
-    ).accepted_sources[0]
-    evidence = DeterministicEvidenceProcessor().process(filtered)
-    assert evidence is not None
-    assert evidence.observation_state is ObservationState.FIRST_IMPRESSION
+    source = "I used it today and the warranty lasts for 12 months."
+    first_day = claim(
+        "I used it today.",
+        source,
+        observation_type="FIRST_IMPRESSION",
+    ).semantic_relation
+    warranty = claim(
+        "The warranty lasts for 12 months.",
+        source,
+        months=12,
+        observation_type="WARRANTY",
+    ).semantic_relation
+
+    assert EvidenceConfidenceEngine._semantic_observation_state(
+        [first_day, warranty]
+    ) is ObservationState.FIRST_IMPRESSION
 
 
 def test_unknown_quality_addition_cannot_improve_quality_gate() -> None:
@@ -522,6 +562,7 @@ def _pipeline(decision_kind: str, count: int, *, copies: bool = False):
     filterer.filter(results)
     sources = registry.retained_sources()
     documents = DeterministicEvidenceProcessor().process_all(sources)
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
     items = [
         claim(
             sentence,
@@ -530,15 +571,16 @@ def _pipeline(decision_kind: str, count: int, *, copies: bool = False):
             sentiment="positive" if positive else "negative",
             severity=1 if positive else 5,
             months=6,
+            target_product_id=product.canonical_name,
         )
         for document in documents
     ]
-    _, assessments = ClaimGroundingValidator().validate_with_assessments(
+    _, assessments = ClaimGroundingValidator(product).validate_with_assessments(
         ClaimExtractionPayload(claims=items), documents
     )
     snapshot = EvaluationSnapshot.create(
         analysis_id=registry.analysis_id,
-        product=DeterministicProductResolver().resolve("AirPods Pro 2"),
+        product=product,
         registry=registry,
         sources=sources,
         evidence_documents=documents,
@@ -567,3 +609,144 @@ def test_copied_severe_reports_do_not_inflate_support() -> None:
     decision, _, clustered = _pipeline("severe", 4, copies=True)
     assert clustered.clusters[0].independent_source_count == 1
     assert decision.decision is not PurchaseDecision.SKIP
+
+class _VerdictProvider(ClaimVerificationProvider):
+    def __init__(self, state: GroundingState) -> None:
+        self.state = state
+        self.repairs: list[bool] = []
+
+    def verify_batch(
+        self,
+        claims,
+        documents,
+        *,
+        target_product_id: str,
+        repair: bool = False,
+    ):
+        self.repairs.append(repair)
+        verdicts = []
+        for item in claims:
+            relation = item.semantic_relation.model_copy(
+                update={"verification_status": self.state}
+            )
+            verdicts.append(
+                ClaimVerificationVerdict(
+                    claim=item,
+                    relation=relation,
+                    verification_status=self.state,
+                    detail=f"fake semantic verdict: {self.state.value}",
+                )
+            )
+        return verdicts
+
+
+@pytest.mark.parametrize(
+    ("state", "accepted"),
+    [
+        (GroundingState.VERIFIED, True),
+        (GroundingState.UNCERTAIN, False),
+        (GroundingState.REJECTED, False),
+    ],
+)
+def test_semantic_provider_verdict_is_authoritative(
+    state: GroundingState, accepted: bool
+) -> None:
+    source = "Unexpectedly the battery failed completely."
+    item = claim("The battery failed completely.", source, severity=5)
+    validator = ClaimGroundingValidator(
+        verification_provider=_VerdictProvider(state)
+    )
+    if accepted:
+        assert validator.validate(
+            ClaimExtractionPayload(claims=[item]), [document(source)]
+        ).claims
+    else:
+        with pytest.raises(ClaimGroundingError):
+            validator.validate(
+                ClaimExtractionPayload(claims=[item]), [document(source)]
+            )
+
+
+def test_repair_reenters_the_same_semantic_verifier() -> None:
+    from app.claim_extraction import StructuredClaimExtractor
+    from tests.test_reliability_correctness import FakeClaimProvider
+
+    source = "The battery was damaged when the charger caught fire."
+    initial = claim("The battery caught fire.", "caught fire", severity=5)
+    repaired = claim("The battery caught fire.", source, severity=5)
+    extractor = FakeClaimProvider(
+        [
+            {"claims": [initial.model_dump(mode="json")]},
+            {"claims": [repaired.model_dump(mode="json")]},
+        ]
+    )
+    verifier = _VerdictProvider(GroundingState.REJECTED)
+    result = StructuredClaimExtractor(
+        extractor,
+        grounding_validator=ClaimGroundingValidator(
+            verification_provider=verifier
+        ),
+    ).extract([document(source)])
+
+    assert result.claims == []
+    assert verifier.repairs == [False, True]
+
+
+def _derived_artifacts():
+    snapshot, _ = _build_snapshot()
+    clustered = SemanticClaimClusterer(
+        VectorProvider(
+            {"battery | The battery failed completely.": [1.0, 0.0]}
+        )
+    ).cluster_snapshot(snapshot)
+    confidence = EvidenceConfidenceEngine().evaluate_snapshot(
+        snapshot, clustered
+    )
+    return snapshot, clustered, confidence
+
+
+def test_rehashed_cluster_deletion_and_sentiment_laundering_are_rejected() -> None:
+    snapshot, clustered, _ = _derived_artifacts()
+    deleted = clustered.model_copy(update={"clusters": []})
+    deleted = deleted.model_copy(
+        update={"content_digest": deleted.expected_content_digest()}
+    )
+    with pytest.raises(ConfidenceInputError):
+        EvidenceConfidenceEngine().evaluate_snapshot(snapshot, deleted)
+
+    cluster = clustered.clusters[0]
+    laundered_cluster = cluster.model_copy(
+        update={"sentiment": ClaimSentiment.POSITIVE}
+    )
+    laundered = clustered.model_copy(update={"clusters": [laundered_cluster]})
+    laundered = laundered.model_copy(
+        update={"content_digest": laundered.expected_content_digest()}
+    )
+    with pytest.raises(ConfidenceInputError):
+        EvidenceConfidenceEngine().evaluate_snapshot(snapshot, laundered)
+
+
+def test_rehashed_forged_confidence_is_rejected_by_decision() -> None:
+    snapshot, clustered, confidence = _derived_artifacts()
+    forged = confidence.model_copy(
+        update={
+            "overall_score": 1.0,
+            "quality_gate_passed": True,
+            "quality_issues": [],
+        }
+    )
+    forged = forged.model_copy(
+        update={"content_digest": forged.expected_content_digest()}
+    )
+    with pytest.raises(DecisionInputError):
+        PurchaseDecisionEngine().evaluate_snapshot(
+            snapshot, forged, clustered
+        )
+
+
+def test_snapshot_bound_artifacts_cannot_use_legacy_entrypoints() -> None:
+    _, clustered, confidence = _derived_artifacts()
+    with pytest.raises(ConfidenceInputError):
+        EvidenceConfidenceEngine().evaluate(clustered, [])
+    with pytest.raises(DecisionInputError):
+        PurchaseDecisionEngine().evaluate(confidence, clustered)

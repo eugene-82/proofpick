@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.claim_extraction import (
     ClaimExtractionPolicy,
     ClaimExtractionProvider,
+    ClaimGroundingValidator,
     ClaimProviderError,
     ExtractedClaim,
     GroundingReasonCode,
@@ -15,6 +16,7 @@ from app.claim_extraction import (
 )
 from app.evidence_processing import EvidenceDocument, EvidenceSource
 from app.models import ClaimSentiment
+from app.product_resolution import DeterministicProductResolver
 from app.source_filtering import SourceType
 
 
@@ -22,14 +24,17 @@ class FakeClaimProvider(ClaimExtractionProvider):
     def __init__(self, responses: list[Any]) -> None:
         self.responses = responses
         self.calls: list[tuple[list[EvidenceDocument], bool]] = []
+        self.target_product_ids: list[str] = []
 
     def extract_batch(
         self,
         documents: Sequence[EvidenceDocument],
         *,
         repair: bool = False,
+        target_product_id: str = "unspecified-product",
     ) -> Any:
         self.calls.append((list(documents), repair))
+        self.target_product_ids.append(target_product_id)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -76,6 +81,19 @@ def claim(
         "severity": severity,
         "usage_period_months": usage_period_months,
         "evidence_fragment": fragment,
+        "semantic_relation": {
+            "target_product_id": "unspecified-product",
+            "subject": aspect,
+            "predicate": fragment,
+            "polarity": "AFFIRMED",
+            "experiencer": "reviewer",
+            "experience_type": "DIRECT",
+            "observation_type": "USAGE" if usage_period_months else "UNKNOWN",
+            "observation_months": usage_period_months,
+            "evidence_quote": fragment,
+            "evidence_source_id": source_id,
+            "verification_status": "VERIFIED",
+        },
     }
 
 
@@ -229,11 +247,10 @@ def test_whitespace_normalized_fragment_is_grounded() -> None:
 
 
 def test_guessed_usage_period_is_dropped_without_discarding_claim_core() -> None:
-    output = {
-        "claims": [
-            claim("S001", "Battery performance declined.", usage_period_months=12)
-        ]
-    }
+    candidate = claim("S001", "Battery performance declined.", usage_period_months=12)
+    candidate["semantic_relation"]["observation_type"] = "UNKNOWN"
+    candidate["semantic_relation"]["observation_months"] = None
+    output = {"claims": [candidate]}
     provider = FakeClaimProvider([output])
     result = StructuredClaimExtractor(provider).extract(
         [evidence("S001", "Battery performance declined.")]
@@ -324,3 +341,23 @@ def test_duplicate_evidence_source_ids_are_rejected_before_provider_call() -> No
             [evidence("S001", "First."), evidence("S001", "Second.")]
         )
     assert provider.calls == []
+
+
+def test_resolved_product_identity_reaches_extraction_and_verification() -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = claim(
+        "S001", "Battery lasts all day.", sentiment="positive"
+    )
+    candidate["semantic_relation"]["target_product_id"] = product.canonical_name
+    provider = FakeClaimProvider([{"claims": [candidate]}])
+
+    result = StructuredClaimExtractor(
+        provider,
+        grounding_validator=ClaimGroundingValidator(product),
+    ).extract([evidence("S001", "Battery lasts all day.")])
+
+    assert provider.target_product_ids == [product.canonical_name]
+    assert (
+        result.claims[0].semantic_relation.target_product_id
+        == product.canonical_name
+    )

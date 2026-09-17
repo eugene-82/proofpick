@@ -16,15 +16,25 @@ from .models import (
     ClaimExtractionFailure,
     ClaimExtractionPayload,
     ClaimExtractionResult,
+    ClaimVerificationVerdict,
+    ExperienceType,
     ExtractedClaim,
     ExtractionFailureCode,
     GroundingAssessment,
     GroundingReasonCode,
     GroundingState,
+    ObservationType,
+    SemanticPolarity,
+    SemanticRelation,
 )
 from .openai_provider import OpenAIClaimExtractionProvider
 from .policy import CLAIM_EXTRACTION_PROMPT_VERSION, ClaimExtractionPolicy
 from .service import StructuredClaimExtractor
+from .verification import (
+    ClaimVerificationProvider,
+    EmbeddedClaimVerificationProvider,
+)
+
 
 __all__ = [
     "CLAIM_EXTRACTION_PROMPT_VERSION",
@@ -37,6 +47,8 @@ __all__ = [
     "ClaimExtractionResult",
     "ClaimGroundingError",
     "ClaimGroundingValidator",
+    "ClaimVerificationProvider",
+    "ClaimVerificationVerdict",
     "ClaimOutputValidationError",
     "ClaimProviderConfigurationError",
     "ClaimProviderError",
@@ -44,9 +56,14 @@ __all__ = [
     "ClaimProviderTimeoutError",
     "ExtractedClaim",
     "ExtractionFailureCode",
+    "EmbeddedClaimVerificationProvider",
+    "ExperienceType",
     "GroundingAssessment",
     "GroundingReasonCode",
     "GroundingState",
     "OpenAIClaimExtractionProvider",
     "StructuredClaimExtractor",
+    "ObservationType",
+    "SemanticPolarity",
+    "SemanticRelation",
 ]

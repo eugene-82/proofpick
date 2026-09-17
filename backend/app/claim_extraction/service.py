@@ -88,9 +88,15 @@ class StructuredClaimExtractor:
 
         for attempt in range(2):
             try:
-                output: Any = self._provider.extract_batch(batch, repair=attempt == 1)
+                output: Any = self._provider.extract_batch(
+                    batch,
+                    repair=attempt == 1,
+                    target_product_id=self._grounding.target_product_id,
+                )
                 payload = ClaimExtractionPayload.model_validate(output)
-                return self._grounding.validate_with_assessments(payload, batch)
+                return self._grounding.validate_with_assessments(
+                    payload, batch, repair=attempt == 1
+                )
             except (ValidationError, ClaimOutputValidationError) as error:
                 last_error = error
                 failure_code = ExtractionFailureCode.MALFORMED_OUTPUT
