@@ -47,7 +47,31 @@ def test_openai_provider_uses_json_schema_without_live_network() -> None:
         assert schema["required"] == ["claims"]
         claim_schema = schema["$defs"]["ExtractedClaim"]
         assert "usage_period_months" in claim_schema["required"]
+        assert "semantic_relation" in claim_schema["required"]
+        assert claim_schema["required"] == list(claim_schema["properties"])
         assert claim_schema["additionalProperties"] is False
+        assert "default" not in claim_schema["properties"]["semantic_relation"]
+        semantic_relation = claim_schema["properties"]["semantic_relation"]
+        assert {item.get("type") for item in semantic_relation["anyOf"]} == {
+            None,
+            "null",
+        }
+        relation_schema = schema["$defs"]["SemanticRelation"]
+        assert relation_schema["additionalProperties"] is False
+        assert relation_schema["required"] == list(relation_schema["properties"])
+        assert "experiencer" in relation_schema["required"]
+        assert "observation_months" in relation_schema["required"]
+        assert {item.get("type") for item in relation_schema["properties"]["experiencer"]["anyOf"]} == {
+            "string",
+            "null",
+        }
+        assert {item.get("type") for item in relation_schema["properties"]["observation_months"]["anyOf"]} == {
+            "integer",
+            "null",
+        }
+        assert schema["properties"]["claims"]["items"] == {
+            "$ref": "#/$defs/ExtractedClaim"
+        }
         request_input = json.loads(body["input"])
         assert request_input["target_product_id"] == "unspecified-product"
         request_evidence = request_input["evidence_documents"][0]

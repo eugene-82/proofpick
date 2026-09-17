@@ -19,6 +19,7 @@ from .exceptions import (
 )
 from .models import ClaimExtractionPayload
 from .prompts import CLAIM_EXTRACTION_INSTRUCTIONS, REPAIR_INSTRUCTION
+from .schema import strict_model_json_schema
 
 
 DEFAULT_OPENAI_CLAIM_MODEL = "gpt-4.1-mini"
@@ -58,39 +59,11 @@ class OpenAIClaimExtractionProvider(ClaimExtractionProvider):
         repair: bool = False,
         target_product_id: str = "unspecified-product",
     ) -> Any:
-        evidence = [
-            {
-                "source_id": document.source_key,
-                "title": document.title,
-                "domain": document.domain,
-                "evidence_source": document.evidence_source.value,
-                "text": document.text,
-            }
-            for document in documents
-        ]
-        instructions = CLAIM_EXTRACTION_INSTRUCTIONS
-        if repair:
-            instructions = f"{instructions}\n\n{REPAIR_INSTRUCTION}"
-        request_body = {
-            "model": self._model,
-            "instructions": instructions,
-            "input": json.dumps(
-                {
-                    "target_product_id": target_product_id,
-                    "evidence_documents": evidence,
-                },
-                ensure_ascii=False,
-            ),
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "proofpick_claim_extraction",
-                    "strict": True,
-                    "schema": ClaimExtractionPayload.model_json_schema(),
-                }
-            },
-            "store": False,
-        }
+        request_body = self.build_request_body(
+            documents,
+            repair=repair,
+            target_product_id=target_product_id,
+        )
 
         try:
             response = self._client.post(
@@ -121,6 +94,49 @@ class OpenAIClaimExtractionProvider(ClaimExtractionProvider):
             raise ClaimOutputValidationError(
                 "OpenAI claim extraction returned malformed structured output"
             ) from error
+
+    def build_request_body(
+        self,
+        documents: Sequence[EvidenceDocument],
+        *,
+        repair: bool = False,
+        target_product_id: str = "unspecified-product",
+    ) -> dict[str, Any]:
+        """Build the exact strict request payload without performing I/O."""
+
+        evidence = [
+            {
+                "source_id": document.source_key,
+                "title": document.title,
+                "domain": document.domain,
+                "evidence_source": document.evidence_source.value,
+                "text": document.text,
+            }
+            for document in documents
+        ]
+        instructions = CLAIM_EXTRACTION_INSTRUCTIONS
+        if repair:
+            instructions = f"{instructions}\n\n{REPAIR_INSTRUCTION}"
+        return {
+            "model": self._model,
+            "instructions": instructions,
+            "input": json.dumps(
+                {
+                    "target_product_id": target_product_id,
+                    "evidence_documents": evidence,
+                },
+                ensure_ascii=False,
+            ),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "proofpick_claim_extraction",
+                    "strict": True,
+                    "schema": strict_model_json_schema(ClaimExtractionPayload),
+                }
+            },
+            "store": False,
+        }
 
     @staticmethod
     def _output_text(response_data: dict[str, Any]) -> str:

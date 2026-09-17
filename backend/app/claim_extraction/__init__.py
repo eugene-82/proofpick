@@ -30,6 +30,7 @@ from .models import (
 from .openai_provider import OpenAIClaimExtractionProvider
 from .policy import CLAIM_EXTRACTION_PROMPT_VERSION, ClaimExtractionPolicy
 from .service import StructuredClaimExtractor
+from .schema import strict_model_json_schema
 from .verification import (
     ClaimVerificationProvider,
     EmbeddedClaimVerificationProvider,
@@ -66,4 +67,5 @@ __all__ = [
     "ObservationType",
     "SemanticPolarity",
     "SemanticRelation",
+    "strict_model_json_schema",
 ]
