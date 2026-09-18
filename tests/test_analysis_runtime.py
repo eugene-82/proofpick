@@ -44,6 +44,12 @@ NEGATIVE_OBSERVATIONS = (
     "Across eight months of regular travel, the battery failed completely and would no longer accept a charge.",
 )
 
+COMMUNITY_QUERY_MARKERS = ("디시인사이드", "에펨코리아", "루리웹")
+
+
+def is_community_query(query: str) -> bool:
+    return any(marker in query for marker in COMMUNITY_QUERY_MARKERS)
+
 
 class FixtureSearchProvider(SearchProvider):
     def __init__(
@@ -114,7 +120,7 @@ class FixtureSearchProvider(SearchProvider):
             return list(self._initial_results)
         if call_number <= 3:
             return []
-        if "site:" in query:
+        if is_community_query(query):
             if self._fail_community:
                 raise SearchProviderError("community search unavailable")
             if self._community_returned:
@@ -303,7 +309,7 @@ def test_runtime_endpoint_reaches_normal_buy() -> None:
     assert verifier.calls == [(False, 4), (False, 4)]
     search = service._providers.search
     assert isinstance(search, FixtureSearchProvider)
-    assert not any("site:" in query for query, _, _ in search.calls)
+    assert not any(is_community_query(query) for query, _, _ in search.calls)
 
 
 def test_runtime_success_log_is_bounded_and_contains_demo_metrics(caplog) -> None:
@@ -369,7 +375,7 @@ def test_runtime_endpoint_returns_early_adopter_for_insufficient_evidence() -> N
     search = service._providers.search
     assert isinstance(search, FixtureSearchProvider)
     community_queries = [
-        query for query, _, _ in search.calls if "site:" in query
+        query for query, _, _ in search.calls if is_community_query(query)
     ]
     assert len(community_queries) == 3
     assert len(search.calls) == 6
@@ -404,7 +410,9 @@ def test_community_boost_can_add_verified_evidence_and_change_decision(
     assert len(community_sources) == 3
     search = service._providers.search
     assert isinstance(search, FixtureSearchProvider)
-    assert len([query for query, _, _ in search.calls if "site:" in query]) == 3
+    assert len(
+        [query for query, _, _ in search.calls if is_community_query(query)]
+    ) == 3
     assert len(search.calls) <= 10
     message = next(
         record.getMessage()
@@ -489,7 +497,7 @@ def test_non_early_initial_decisions_do_not_run_community_boost(
     assert response.json()["initial_decision"] == expected_decision
     search = service._providers.search
     assert isinstance(search, FixtureSearchProvider)
-    assert not any("site:" in query for query, _, _ in search.calls)
+    assert not any(is_community_query(query) for query, _, _ in search.calls)
 
 
 def test_runtime_endpoint_fails_closed_when_provider_configuration_is_missing(
@@ -712,7 +720,7 @@ class ProvisionalCommunitySearchProvider(SearchProvider):
                 )
                 for index in range(1, 3)
             ]
-        if len(self.calls) <= 3 or "site:" not in query:
+        if len(self.calls) <= 3 or not is_community_query(query):
             return []
         if self._community_returned:
             return []
@@ -756,7 +764,7 @@ def test_provisional_identity_filters_community_results_within_budget() -> None:
     assert body["initial_decision"] == "EARLY_ADOPTER"
     assert body["decision"] == "BUY"
     assert all("ZX-400" not in (source["title"] or "") for source in body["sources"])
-    assert len([query for query in search.calls if "site:" in query]) == 3
+    assert len([query for query in search.calls if is_community_query(query)]) == 3
     assert len(search.calls) <= 10
 
 

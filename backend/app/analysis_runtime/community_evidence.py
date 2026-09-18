@@ -16,7 +16,7 @@ class KoreanCommunityPlan:
 
 
 class KoreanCommunityQueryGenerator:
-    """Expand only an insufficient analysis using explicit community domains."""
+    """Expand only an insufficient analysis using Korean community names."""
 
     max_queries = 3
     global_query_budget = DEFAULT_QUERY_BUDGET_POLICY.maximum
@@ -32,15 +32,9 @@ class KoreanCommunityQueryGenerator:
             return KoreanCommunityPlan(queries=())
 
         candidates = (
-            (
-                f"{product_identity} "
-                "(site:dcinside.com OR site:fmkorea.com) 후기 단점"
-            ),
-            (
-                f"{product_identity} "
-                "(site:theqoo.net OR site:arca.live) 후기 문제"
-            ),
-            f"{product_identity} site:ruliweb.com 실사용 장기 사용",
+            f"{product_identity} 디시인사이드 후기 단점",
+            f"{product_identity} 에펨코리아 후기 문제",
+            f"{product_identity} 루리웹 실사용 장기 사용",
         )
         remaining_budget = max(
             0, self.global_query_budget - len(previous_queries)

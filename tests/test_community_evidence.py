@@ -23,12 +23,13 @@ def generate(
 def test_early_adopter_generates_three_explicit_korean_community_queries() -> None:
     plan = generate(PurchaseDecision.EARLY_ADOPTER)
 
-    assert len(plan.queries) == 3
-    assert "site:dcinside.com" in plan.queries[0]
-    assert "site:fmkorea.com" in plan.queries[0]
-    assert "site:theqoo.net" in plan.queries[1]
-    assert "site:arca.live" in plan.queries[1]
-    assert "site:ruliweb.com" in plan.queries[2]
+    assert plan.queries == (
+        "Example Headphones 디시인사이드 후기 단점",
+        "Example Headphones 에펨코리아 후기 문제",
+        "Example Headphones 루리웹 실사용 장기 사용",
+    )
+    assert all("site:" not in query for query in plan.queries)
+    assert all(" OR " not in query for query in plan.queries)
     assert all(query.startswith("Example Headphones") for query in plan.queries)
 
 
