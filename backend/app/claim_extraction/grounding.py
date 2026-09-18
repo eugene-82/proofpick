@@ -42,6 +42,9 @@ _GENERATION_VALUES = {
 _NUMBERED_GENERATION = r"1st|2nd|3rd|1|2|3"
 _WORD_GENERATION = r"first|second|third"
 _ANY_GENERATION = rf"{_NUMBERED_GENERATION}|{_WORD_GENERATION}"
+_KOREAN_PRODUCT_FAMILY_ALIASES = {
+    "airpods pro": ("에어팟 프로", "에어팟프로"),
+}
 
 
 
@@ -211,7 +214,7 @@ class ClaimGroundingValidator:
     @staticmethod
     def _explicit_generations(text: str, product_name: str) -> frozenset[int]:
         family = r"\s+".join(re.escape(part) for part in product_name.split())
-        patterns = (
+        patterns = [
             rf"(?<![A-Za-z0-9]){family}\s*\(?\s*"
             rf"(?P<generation>{_NUMBERED_GENERATION})"
             rf"(?:[-\s]+generation)?\s*\)?(?=$|[^A-Za-z0-9])",
@@ -220,7 +223,18 @@ class ClaimGroundingValidator:
             rf"\s*\)?(?=$|[^A-Za-z0-9])",
             rf"(?<![A-Za-z0-9])(?P<generation>{_ANY_GENERATION})"
             rf"[-\s]+generation\s+{family}(?=$|[^A-Za-z0-9])",
-        )
+        ]
+        normalized_family = " ".join(product_name.casefold().split())
+        for alias in _KOREAN_PRODUCT_FAMILY_ALIASES.get(normalized_family, ()):
+            korean_family = re.escape(alias)
+            patterns.extend(
+                (
+                    rf"(?<![A-Za-z0-9가-힣]){korean_family}\s*"
+                    rf"(?P<generation>[123])(?:\s*세대)?(?![0-9])",
+                    rf"(?<![0-9])(?P<generation>[123])\s*세대\s*"
+                    rf"{korean_family}(?![A-Za-z0-9])",
+                )
+            )
         return frozenset(
             _GENERATION_VALUES[match.group("generation").casefold()]
             for pattern in patterns

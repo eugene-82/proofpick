@@ -434,6 +434,42 @@ def test_explicit_cross_generation_claim_is_rejected(
 @pytest.mark.parametrize(
     ("subject", "fragment"),
     [
+        ("에어팟 프로 3", "에어팟 프로 3 연결이 자주 끊긴다"),
+        ("에어팟 프로3", "에어팟 프로3 연결이 자주 끊긴다"),
+        ("에어팟 프로 3세대", "에어팟 프로 3세대 연결이 자주 끊긴다"),
+        ("에어팟 프로 3 세대", "에어팟 프로 3 세대 연결이 자주 끊긴다"),
+        ("에어팟 프로3세대", "에어팟 프로3세대 연결이 자주 끊긴다"),
+        ("3세대 에어팟 프로", "3세대 에어팟 프로 연결이 자주 끊긴다"),
+        ("3 세대 에어팟 프로", "3 세대 에어팟 프로 연결이 자주 끊긴다"),
+        ("에어팟 프로 1세대", "에어팟 프로 1세대 배터리가 빨리 닳는다"),
+        ("에어팟 프로1세대", "에어팟 프로1세대 배터리가 빨리 닳는다"),
+        ("에어팟 프로", "에어팟 프로 3 연결이 자주 끊긴다"),
+    ],
+)
+def test_explicit_korean_cross_generation_claim_is_rejected(
+    subject: str, fragment: str
+) -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = generation_claim(
+        subject,
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    with pytest.raises(ClaimGroundingError) as error:
+        ClaimGroundingValidator(product).validate_with_assessments(
+            ClaimExtractionPayload(claims=[candidate]),
+            [evidence("S001", fragment)],
+        )
+
+    assessment = error.value.assessments[0]
+    assert assessment.state is GroundingState.REJECTED
+    assert assessment.reason_code is GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("subject", "fragment"),
+    [
         ("AirPods Pro 2", "my AirPods Pro 2 remained connected"),
         (
             "2nd generation AirPods Pro",
@@ -465,6 +501,76 @@ def test_matching_or_generic_generation_claim_is_allowed(
 
     assert verified.claims == [candidate]
     assert assessments[0].state is GroundingState.VERIFIED
+
+
+@pytest.mark.parametrize(
+    ("subject", "fragment"),
+    [
+        ("에어팟 프로 2", "에어팟 프로 2 연결이 안정적이다"),
+        ("에어팟 프로2", "에어팟 프로2 연결이 안정적이다"),
+        ("에어팟 프로 2세대", "에어팟 프로 2세대 연결이 안정적이다"),
+        ("에어팟 프로2세대", "에어팟 프로2세대 연결이 안정적이다"),
+        ("2세대 에어팟 프로", "2세대 에어팟 프로 연결이 안정적이다"),
+        ("에어팟 프로", "에어팟 프로 연결이 안정적이다"),
+        ("에어팟 프로", "세 번째 문제는 연결이 한 번 끊긴 것이다"),
+        ("에어팟 프로", "3번째 이슈는 연결이 한 번 끊긴 것이다"),
+    ],
+)
+def test_matching_generic_or_ordinal_korean_generation_claim_is_allowed(
+    subject: str, fragment: str
+) -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = generation_claim(
+        subject,
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    verified, assessments = ClaimGroundingValidator(
+        product
+    ).validate_with_assessments(
+        ClaimExtractionPayload(claims=[candidate]),
+        [evidence("S001", fragment)],
+    )
+
+    assert verified.claims == [candidate]
+    assert assessments[0].state is GroundingState.VERIFIED
+
+
+@pytest.mark.parametrize(
+    ("subject", "fragment"),
+    [
+        (
+            "에어팟 프로 3세대",
+            "통화품질은 굉장히 좋아짐 1세대는 주변에 사람 많거나 바람 불면 "
+            "상대방이 잘 안들린다고 난리였는데 3세대는 집에서 통화하는 느낌이라 "
+            "하니 이쪽은 굉장히 만족스러움",
+        ),
+        (
+            "에어팟 프로 3",
+            "아니 베이스랑 노캔이 2랑 차이가 확 날만큼 더 좋아졌다니",
+        ),
+    ],
+)
+def test_korean_production_generation_claim_is_rejected_when_subject_is_explicit(
+    subject: str, fragment: str
+) -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = generation_claim(
+        subject,
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    with pytest.raises(ClaimGroundingError) as error:
+        ClaimGroundingValidator(product).validate(
+            ClaimExtractionPayload(claims=[candidate]),
+            [evidence("S001", fragment)],
+        )
+
+    assert error.value.assessments[0].reason_code is (
+        GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+    )
 
 
 def test_subject_generation_takes_priority_over_comparison_fragment() -> None:
