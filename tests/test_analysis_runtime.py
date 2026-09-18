@@ -378,6 +378,7 @@ def test_runtime_endpoint_returns_early_adopter_for_insufficient_evidence() -> N
         query for query, _, _ in search.calls if is_community_query(query)
     ]
     assert len(community_queries) == 3
+    assert all(query.startswith("에어팟 프로 2 ") for query in community_queries)
     assert len(search.calls) == 6
 
 

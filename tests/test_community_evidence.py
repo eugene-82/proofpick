@@ -7,6 +7,7 @@ from app.models import PurchaseDecision
 def generate(
     decision: PurchaseDecision,
     *,
+    product_identity: str = "Example Headphones",
     previous_queries: tuple[str, ...] = (
         "Example Headphones 실사용 후기",
         "Example Headphones 단점 문제",
@@ -14,7 +15,7 @@ def generate(
     ),
 ):
     return KoreanCommunityQueryGenerator().generate(
-        product_identity="Example Headphones",
+        product_identity=product_identity,
         decision=decision,
         previous_queries=previous_queries,
     )
@@ -31,6 +32,42 @@ def test_early_adopter_generates_three_explicit_korean_community_queries() -> No
     assert all("site:" not in query for query in plan.queries)
     assert all(" OR " not in query for query in plan.queries)
     assert all(query.startswith("Example Headphones") for query in plan.queries)
+
+
+@pytest.mark.parametrize(
+    ("canonical_name", "query_alias"),
+    [
+        ("Apple AirPods Pro (2nd generation)", "에어팟 프로 2"),
+        ("Logitech MX Master 3S", "로지텍 MX Master 3S"),
+    ],
+)
+def test_known_products_use_bounded_korean_query_aliases(
+    canonical_name: str, query_alias: str
+) -> None:
+    plan = generate(
+        PurchaseDecision.EARLY_ADOPTER,
+        product_identity=canonical_name,
+    )
+
+    assert len(plan.queries) == 3
+    assert all(query.startswith(f"{query_alias} ") for query in plan.queries)
+
+
+@pytest.mark.parametrize(
+    "canonical_name",
+    [
+        "Example Unknown Product X1",
+        "Apple AirPods Pro (3rd generation)",
+    ],
+)
+def test_unmapped_product_keeps_canonical_query_name(canonical_name: str) -> None:
+    plan = generate(
+        PurchaseDecision.EARLY_ADOPTER,
+        product_identity=canonical_name,
+    )
+
+    assert len(plan.queries) == 3
+    assert all(query.startswith(f"{canonical_name} ") for query in plan.queries)
 
 
 @pytest.mark.parametrize(

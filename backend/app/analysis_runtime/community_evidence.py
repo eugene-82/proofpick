@@ -6,6 +6,12 @@ from app.models import PurchaseDecision
 from app.query_generation.policy import DEFAULT_QUERY_BUDGET_POLICY
 
 
+_QUERY_PRODUCT_ALIASES = {
+    "apple airpods pro (2nd generation)": "에어팟 프로 2",
+    "logitech mx master 3s": "로지텍 MX Master 3S",
+}
+
+
 @dataclass(frozen=True)
 class KoreanCommunityPlan:
     queries: tuple[str, ...]
@@ -31,10 +37,13 @@ class KoreanCommunityQueryGenerator:
         if decision is not PurchaseDecision.EARLY_ADOPTER:
             return KoreanCommunityPlan(queries=())
 
+        query_product_name = _QUERY_PRODUCT_ALIASES.get(
+            self._normalized(product_identity), product_identity
+        )
         candidates = (
-            f"{product_identity} 디시인사이드 후기 단점",
-            f"{product_identity} 에펨코리아 후기 문제",
-            f"{product_identity} 루리웹 실사용 장기 사용",
+            f"{query_product_name} 디시인사이드 후기 단점",
+            f"{query_product_name} 에펨코리아 후기 문제",
+            f"{query_product_name} 루리웹 실사용 장기 사용",
         )
         remaining_budget = max(
             0, self.global_query_budget - len(previous_queries)
