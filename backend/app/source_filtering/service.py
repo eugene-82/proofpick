@@ -19,7 +19,17 @@ from .models import (
 from .normalizer import SourceNormalizer
 from .registry import SourceIdentityRegistry
 
-COMMUNITY_DOMAINS = frozenset({"reddit.com", "quora.com"})
+COMMUNITY_DOMAINS = frozenset(
+    {
+        "arca.live",
+        "dcinside.com",
+        "fmkorea.com",
+        "quora.com",
+        "reddit.com",
+        "ruliweb.com",
+        "theqoo.net",
+    }
+)
 
 
 class DeterministicSourceFilter(SourceFilter):

@@ -7,6 +7,10 @@ from .exceptions import (
     AnalysisRuntimeError,
 )
 from .counter_evidence import CounterEvidencePlan, CounterEvidenceQueryGenerator
+from .community_evidence import (
+    KoreanCommunityPlan,
+    KoreanCommunityQueryGenerator,
+)
 from .models import (
     AnalysisClaimSummary,
     AnalysisEvidenceReference,
@@ -31,4 +35,6 @@ __all__ = [
     "AnalysisSourceSummary",
     "CounterEvidencePlan",
     "CounterEvidenceQueryGenerator",
+    "KoreanCommunityPlan",
+    "KoreanCommunityQueryGenerator",
 ]

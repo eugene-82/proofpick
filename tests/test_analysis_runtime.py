@@ -27,6 +27,7 @@ from app.search.base import SearchProvider
 from app.search.exceptions import SearchProviderError
 from app.search.models import SearchResult
 from app.search.tavily import TavilySearchProvider
+from app.source_filtering import SourceType
 
 
 POSITIVE_OBSERVATIONS = (
@@ -49,7 +50,9 @@ class FixtureSearchProvider(SearchProvider):
         self,
         observations: Sequence[str],
         *,
+        community_observations: Sequence[str] = (),
         counter_observations: Sequence[str] = (),
+        fail_community: bool = False,
         fail_counter: bool = False,
     ) -> None:
         self._initial_results = [
@@ -73,6 +76,28 @@ class FixtureSearchProvider(SearchProvider):
             )
             for index, text in enumerate(counter_observations, start=1)
         ]
+        community_domains = (
+            "gall.dcinside.com",
+            "m.fmkorea.com",
+            "www.theqoo.net",
+            "board.arca.live",
+            "bbs.ruliweb.com",
+        )
+        self._community_results = [
+            SearchResult(
+                title=f"Community owner review {index}",
+                url=(
+                    f"https://{community_domains[(index - 1) % len(community_domains)]}"
+                    f"/review/{index}"
+                ),
+                snippet=text,
+                raw_content=text,
+            )
+            for index, text in enumerate(community_observations, start=1)
+        ]
+        self._community_returned = False
+        self._counter_returned = False
+        self._fail_community = fail_community
         self._fail_counter = fail_counter
         self.calls: list[tuple[str, int, bool]] = []
 
@@ -87,9 +112,19 @@ class FixtureSearchProvider(SearchProvider):
         call_number = len(self.calls)
         if call_number == 1:
             return list(self._initial_results)
-        if call_number == 4:
+        if call_number <= 3:
+            return []
+        if "site:" in query:
+            if self._fail_community:
+                raise SearchProviderError("community search unavailable")
+            if self._community_returned:
+                return []
+            self._community_returned = True
+            return list(self._community_results)
+        if not self._counter_returned:
             if self._fail_counter:
                 raise SearchProviderError("counter search unavailable")
+            self._counter_returned = True
             return list(self._counter_results)
         return []
 
@@ -209,7 +244,9 @@ def runtime_service(
     *,
     uncertain: bool = False,
     embeddings: EmbeddingProvider | None = None,
+    community_observations: Sequence[str] = (),
     counter_observations: Sequence[str] = (),
+    fail_community: bool = False,
     fail_counter: bool = False,
     tracking: bool = False,
 ) -> tuple[AnalysisRuntimeService, RecordingVerificationProvider]:
@@ -217,7 +254,9 @@ def runtime_service(
     providers = AnalysisRuntimeProviders(
         search=FixtureSearchProvider(
             observations,
+            community_observations=community_observations,
             counter_observations=counter_observations,
+            fail_community=fail_community,
             fail_counter=fail_counter,
         ),
         claim_extraction=FixtureClaimProvider(uncertain=uncertain),
@@ -262,6 +301,9 @@ def test_runtime_endpoint_reaches_normal_buy() -> None:
     assert body["counter_evidence_source_count"] == 0
     assert body["decision_changed"] is False
     assert verifier.calls == [(False, 4), (False, 4)]
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert not any("site:" in query for query, _, _ in search.calls)
 
 
 def test_runtime_success_log_is_bounded_and_contains_demo_metrics(caplog) -> None:
@@ -286,6 +328,8 @@ def test_runtime_success_log_is_bounded_and_contains_demo_metrics(caplog) -> Non
     assert "decision=BUY" in message
     assert "counter_attempted=True" in message
     assert "counter_completed=True" in message
+    assert "community_boost_attempted=False" in message
+    assert "community_query_count=0" in message
     assert "duration_ms=" in message
     assert "AirPods Pro 2" not in message
     assert POSITIVE_OBSERVATIONS[0] not in message
@@ -322,6 +366,130 @@ def test_runtime_endpoint_returns_early_adopter_for_insufficient_evidence() -> N
     assert body["counter_evidence_attempted"] is False
     assert body["counter_evidence_completed"] is False
     assert body["counter_evidence_queries"] == []
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    community_queries = [
+        query for query, _, _ in search.calls if "site:" in query
+    ]
+    assert len(community_queries) == 3
+    assert len(search.calls) == 6
+
+
+def test_community_boost_can_add_verified_evidence_and_change_decision(
+    caplog,
+) -> None:
+    service, _ = runtime_service(
+        POSITIVE_OBSERVATIONS[:1],
+        community_observations=POSITIVE_OBSERVATIONS[1:],
+        tracking=True,
+    )
+
+    logger_name = "uvicorn.error.proofpick.analysis"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        response = post_analysis(service)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["initial_decision"] == "EARLY_ADOPTER"
+    assert body["decision"] == "BUY"
+    assert len(body["sources"]) == 4
+    assert body["claims"][0]["independent_source_count"] == 4
+    assert isinstance(service, TrackingAnalysisRuntimeService)
+    community_evaluation = service.evaluations[1]
+    community_sources = [
+        source
+        for source in community_evaluation.sources
+        if source.source_type is SourceType.COMMUNITY
+    ]
+    assert len(community_sources) == 3
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert len([query for query, _, _ in search.calls if "site:" in query]) == 3
+    assert len(search.calls) <= 10
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == logger_name
+        and record.getMessage().startswith("analysis_complete")
+    )
+    assert "community_boost_attempted=True" in message
+    assert "community_query_count=3" in message
+    assert "community_source_count=3" in message
+    assert "decision_before_community=EARLY_ADOPTER" in message
+    assert "decision_after_community=BUY" in message
+    assert "site:" not in message
+
+
+def test_community_search_failure_preserves_initial_early_adopter_without_retry() -> None:
+    service, _ = runtime_service(
+        POSITIVE_OBSERVATIONS[:1],
+        fail_community=True,
+    )
+
+    response = post_analysis(service)
+
+    assert response.status_code == 200
+    assert response.json()["decision"] == "EARLY_ADOPTER"
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert len(search.calls) == 4
+
+
+def test_community_duplicates_do_not_inflate_independent_support() -> None:
+    service, _ = runtime_service(
+        POSITIVE_OBSERVATIONS[:1],
+        community_observations=(
+            POSITIVE_OBSERVATIONS[0],
+            POSITIVE_OBSERVATIONS[1],
+            POSITIVE_OBSERVATIONS[2],
+        ),
+    )
+
+    response = post_analysis(service)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["sources"]) == 3
+    assert body["claims"][0]["independent_source_count"] == 3
+
+
+def test_community_then_counter_stays_within_global_query_budget() -> None:
+    service, _ = runtime_service(
+        POSITIVE_OBSERVATIONS[:1],
+        community_observations=NEGATIVE_OBSERVATIONS,
+    )
+
+    response = post_analysis(service)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["initial_decision"] == "EARLY_ADOPTER"
+    assert body["decision"] == "SKIP"
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert len(search.calls) == 9
+    assert len(search.calls) <= 10
+
+
+@pytest.mark.parametrize(
+    ("observations", "expected_decision"),
+    [
+        (NEGATIVE_OBSERVATIONS[:3], "BUY_IF"),
+        (NEGATIVE_OBSERVATIONS, "SKIP"),
+    ],
+)
+def test_non_early_initial_decisions_do_not_run_community_boost(
+    observations: Sequence[str], expected_decision: str
+) -> None:
+    service, _ = runtime_service(observations)
+
+    response = post_analysis(service)
+
+    assert response.status_code == 200
+    assert response.json()["initial_decision"] == expected_decision
+    search = service._providers.search
+    assert isinstance(search, FixtureSearchProvider)
+    assert not any("site:" in query for query, _, _ in search.calls)
 
 
 def test_runtime_endpoint_fails_closed_when_provider_configuration_is_missing(
@@ -519,6 +687,77 @@ def test_unconfirmed_provisional_identity_still_returns_422() -> None:
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "PRODUCT_IDENTITY_UNRESOLVED"
     assert search.calls == ["Acme ZX-500"]
+
+
+class ProvisionalCommunitySearchProvider(SearchProvider):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._community_returned = False
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        include_raw_content: bool = False,
+    ) -> list[SearchResult]:
+        self.calls.append(query)
+        if len(self.calls) == 1:
+            return [
+                SearchResult(
+                    title=f"Acme ZX-500 owner review {index}",
+                    url=f"https://identity-{index}.example.com/acme-zx-500",
+                    snippet=POSITIVE_OBSERVATIONS[index - 1],
+                    raw_content=POSITIVE_OBSERVATIONS[index - 1],
+                )
+                for index in range(1, 3)
+            ]
+        if len(self.calls) <= 3 or "site:" not in query:
+            return []
+        if self._community_returned:
+            return []
+        self._community_returned = True
+        return [
+            SearchResult(
+                title="ZX-500 long-term owner review",
+                url="https://gall.dcinside.com/board/view/?id=acme&no=1",
+                snippet=POSITIVE_OBSERVATIONS[2],
+                raw_content=POSITIVE_OBSERVATIONS[2],
+            ),
+            SearchResult(
+                title="Acme ZX-500 durability review",
+                url="https://m.fmkorea.com/123456",
+                snippet=POSITIVE_OBSERVATIONS[3],
+                raw_content=POSITIVE_OBSERVATIONS[3],
+            ),
+            SearchResult(
+                title="Acme ZX-400 competing model review",
+                url="https://theqoo.net/review/999",
+                snippet=NEGATIVE_OBSERVATIONS[0],
+                raw_content=NEGATIVE_OBSERVATIONS[0],
+            ),
+        ]
+
+
+def test_provisional_identity_filters_community_results_within_budget() -> None:
+    search = ProvisionalCommunitySearchProvider()
+    providers = AnalysisRuntimeProviders(
+        search=search,
+        claim_extraction=FixtureClaimProvider(),
+        claim_verification=RecordingVerificationProvider(),
+        embeddings=FixtureEmbeddingProvider(),
+    )
+    service = AnalysisRuntimeService(providers)
+
+    response = post_analysis(service, "Acme ZX-500")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["initial_decision"] == "EARLY_ADOPTER"
+    assert body["decision"] == "BUY"
+    assert all("ZX-400" not in (source["title"] or "") for source in body["sources"])
+    assert len([query for query in search.calls if "site:" in query]) == 3
+    assert len(search.calls) <= 10
 
 
 def test_existing_galaxy_identity_skips_provisional_probe() -> None:

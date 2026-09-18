@@ -130,6 +130,54 @@ def test_same_domain_different_posts_are_independent_and_ordered() -> None:
     assert result.dropped_sources == []
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gall.dcinside.com/board/view/?id=mouse&no=1",
+        "https://m.fmkorea.com/123456",
+        "https://www.theqoo.net/review/123",
+        "https://board.arca.live/b/review/123",
+        "https://bbs.ruliweb.com/community/board/300143/read/123",
+    ],
+)
+def test_korean_community_root_and_subdomains_are_classified_as_community(
+    url: str,
+) -> None:
+    accepted = DeterministicSourceFilter().filter(
+        [candidate(url, snippet="Distinct owner experience.")]
+    ).accepted_sources[0]
+
+    assert accepted.source_type is SourceType.COMMUNITY
+
+
+def test_distinct_posts_on_one_korean_community_remain_independent() -> None:
+    result = DeterministicSourceFilter().filter(
+        [
+            candidate(
+                "https://gall.dcinside.com/board/view/?id=mouse&no=1",
+                snippet="First owner's distinct long-term report.",
+            ),
+            candidate(
+                "https://gall.dcinside.com/board/view/?id=mouse&no=2",
+                snippet="Second owner's separate device experience.",
+            ),
+        ]
+    )
+
+    assert len(result.accepted_sources) == 2
+    assert len(
+        {source.independence_group_id for source in result.accepted_sources}
+    ) == 2
+
+
+def test_regular_blog_domain_remains_web_source() -> None:
+    accepted = DeterministicSourceFilter().filter(
+        [candidate("https://review.example.com/product")]
+    ).accepted_sources[0]
+
+    assert accepted.source_type is SourceType.WEB
+
+
 def test_invalid_and_completely_empty_results_are_traceable_drops() -> None:
     result = DeterministicSourceFilter().filter(
         [

@@ -38,6 +38,7 @@ from app.source_filtering import (
 )
 
 from .counter_evidence import CounterEvidenceQueryGenerator
+from .community_evidence import KoreanCommunityQueryGenerator
 from .exceptions import (
     AnalysisInputError,
     AnalysisIntegrityError,
@@ -73,6 +74,7 @@ class AnalysisRuntimeService:
         self._resolver = DeterministicProductResolver()
         self._search_identity_resolver = SearchAssistedIdentityResolver()
         self._query_generator = DeterministicQueryGenerator()
+        self._community_query_generator = KoreanCommunityQueryGenerator()
         self._counter_query_generator = CounterEvidenceQueryGenerator()
         self._evidence_processor = DeterministicEvidenceProcessor()
 
@@ -161,25 +163,82 @@ class AnalysisRuntimeService:
         source_filter.filter(initial_results)
         initial = self._evaluate_final_set(analysis_id, product, registry)
 
+        community_boost_attempted = False
+        community_query_count = 0
+        community_source_count = 0
+        after_community = initial
+        community_plan = self._community_query_generator.generate(
+            product_identity=product.canonical_name or "unresolved-product",
+            decision=initial.decision.decision,
+            previous_queries=initial_queries,
+        )
+        searched_queries = initial_queries
+        if community_plan.attempted:
+            community_boost_attempted = True
+            initial_source_keys = {
+                source.source_key for source in initial.sources
+            }
+            initial_registry_revision = registry.revision
+
+            def record_community_search_attempt() -> None:
+                nonlocal community_query_count
+                community_query_count += 1
+                record_search_attempt()
+
+            try:
+                community_results = self._search(
+                    community_plan.queries,
+                    on_attempt=record_community_search_attempt,
+                )
+                if provisional_candidate is not None:
+                    community_results = (
+                        self._search_identity_resolver.supporting_results(
+                            provisional_candidate, community_results
+                        )
+                    )
+            except SearchProviderError:
+                logger.warning(
+                    "community_boost_incomplete stage=search query_count=%d",
+                    community_query_count,
+                )
+            else:
+                source_filter.filter(community_results)
+                community_source_count = sum(
+                    source.source_key not in initial_source_keys
+                    for source in registry.retained_sources()
+                )
+                if registry.revision != initial_registry_revision:
+                    after_community = self._evaluate_final_set(
+                        analysis_id, product, registry
+                    )
+                searched_queries = (*initial_queries, *community_plan.queries)
+
         counter_plan = self._counter_query_generator.generate(
             product_identity=product.canonical_name or "unresolved-product",
-            decision=initial.decision,
-            clusters=initial.clusters,
-            initial_queries=initial_queries,
+            decision=after_community.decision,
+            clusters=after_community.clusters,
+            initial_queries=searched_queries,
         )
         if not counter_plan.attempted:
             response = self._response(
-                UUID(analysis_id), product, initial, initial,
+                UUID(analysis_id), product, initial, after_community,
                 attempted=False, completed=False, queries=(),
                 counter_source_keys=frozenset(),
             )
             return self._log_completion(
-                response, query_count=search_query_count, started_at=started_at
+                response,
+                query_count=search_query_count,
+                started_at=started_at,
+                community_boost_attempted=community_boost_attempted,
+                community_query_count=community_query_count,
+                community_source_count=community_source_count,
+                decision_before_community=initial.decision.decision.value,
+                decision_after_community=after_community.decision.decision.value,
             )
 
-        initial_identity_urls = frozenset(
+        pre_counter_identity_urls = frozenset(
             url
-            for source in initial.sources
+            for source in after_community.sources
             for url in (source.normalized_url, *source.url_aliases)
         )
         try:
@@ -192,7 +251,7 @@ class AnalysisRuntimeService:
                 )
         except SearchProviderError:
             response = self._response(
-                UUID(analysis_id), product, initial, initial,
+                UUID(analysis_id), product, initial, after_community,
                 attempted=True, completed=False, queries=counter_plan.queries,
                 counter_source_keys=frozenset(),
             )
@@ -200,6 +259,11 @@ class AnalysisRuntimeService:
                 response,
                 query_count=search_query_count,
                 started_at=started_at,
+                community_boost_attempted=community_boost_attempted,
+                community_query_count=community_query_count,
+                community_source_count=community_source_count,
+                decision_before_community=initial.decision.decision.value,
+                decision_after_community=after_community.decision.decision.value,
             )
 
         source_filter.filter(counter_results)
@@ -207,7 +271,7 @@ class AnalysisRuntimeService:
         counter_source_keys = frozenset(
             source.source_key
             for source in final.sources
-            if not initial_identity_urls.intersection(
+            if not pre_counter_identity_urls.intersection(
                 {source.normalized_url, *source.url_aliases}
             )
         )
@@ -220,6 +284,11 @@ class AnalysisRuntimeService:
             response,
             query_count=search_query_count,
             started_at=started_at,
+            community_boost_attempted=community_boost_attempted,
+            community_query_count=community_query_count,
+            community_source_count=community_source_count,
+            decision_before_community=initial.decision.decision.value,
+            decision_after_community=after_community.decision.decision.value,
         )
 
     @staticmethod
@@ -228,14 +297,27 @@ class AnalysisRuntimeService:
         *,
         query_count: int,
         started_at: float,
+        community_boost_attempted: bool,
+        community_query_count: int,
+        community_source_count: int,
+        decision_before_community: str,
+        decision_after_community: str,
     ) -> AnalysisResponse:
         logger.info(
             "analysis_complete request_id=%s query_count=%d source_count=%d "
-            "decision=%s counter_attempted=%s counter_completed=%s duration_ms=%d",
+            "decision=%s community_boost_attempted=%s "
+            "community_query_count=%d community_source_count=%d "
+            "decision_before_community=%s decision_after_community=%s "
+            "counter_attempted=%s counter_completed=%s duration_ms=%d",
             response.analysis_id,
             query_count,
             len(response.sources),
             response.decision.value,
+            community_boost_attempted,
+            community_query_count,
+            community_source_count,
+            decision_before_community,
+            decision_after_community,
             response.counter_evidence_attempted,
             response.counter_evidence_completed,
             round((monotonic() - started_at) * 1000),
