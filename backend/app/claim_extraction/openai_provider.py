@@ -1,6 +1,7 @@
 """Minimal OpenAI Responses API provider for structured claim output."""
 
 import json
+import math
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -23,6 +24,8 @@ from .schema import strict_model_json_schema
 
 
 DEFAULT_OPENAI_CLAIM_MODEL = "gpt-4.1-mini"
+DEFAULT_OPENAI_EXTRACTION_TIMEOUT_SECONDS = 90.0
+MAX_OPENAI_EXTRACTION_TIMEOUT_SECONDS = 300.0
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
@@ -35,21 +38,42 @@ class OpenAIClaimExtractionProvider(ClaimExtractionProvider):
         model: str = DEFAULT_OPENAI_CLAIM_MODEL,
         *,
         client: httpx.Client | None = None,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = DEFAULT_OPENAI_EXTRACTION_TIMEOUT_SECONDS,
     ) -> None:
         if not api_key.strip():
             raise ClaimProviderConfigurationError("OPENAI_API_KEY is required")
         if not model.strip():
             raise ClaimProviderConfigurationError("OPENAI_CLAIM_MODEL is required")
+        if (
+            not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+            or timeout_seconds > MAX_OPENAI_EXTRACTION_TIMEOUT_SECONDS
+        ):
+            raise ClaimProviderConfigurationError(
+                "OPENAI_EXTRACTION_TIMEOUT_SECONDS must be greater than 0 "
+                f"and at most {MAX_OPENAI_EXTRACTION_TIMEOUT_SECONDS:g}"
+            )
         self._api_key = api_key
         self._model = model
+        self._timeout_seconds = timeout_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
     @classmethod
     def from_env(cls) -> "OpenAIClaimExtractionProvider":
+        timeout_value = os.getenv(
+            "OPENAI_EXTRACTION_TIMEOUT_SECONDS",
+            str(DEFAULT_OPENAI_EXTRACTION_TIMEOUT_SECONDS),
+        )
+        try:
+            timeout_seconds = float(timeout_value)
+        except ValueError as error:
+            raise ClaimProviderConfigurationError(
+                "OPENAI_EXTRACTION_TIMEOUT_SECONDS must be numeric"
+            ) from error
         return cls(
             api_key=os.getenv("OPENAI_API_KEY", ""),
             model=os.getenv("OPENAI_CLAIM_MODEL", DEFAULT_OPENAI_CLAIM_MODEL),
+            timeout_seconds=timeout_seconds,
         )
 
     def extract_batch(

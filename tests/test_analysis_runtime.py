@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.analysis_runtime import (
+    AnalysisProviderUnavailableError,
     AnalysisRuntimeProviders,
     AnalysisRuntimeService,
 )
@@ -353,6 +354,7 @@ def test_runtime_provider_bundle_can_be_constructed_from_configuration(
     monkeypatch.setenv("OPENAI_API_KEY", "test-model-key")
     monkeypatch.setenv("OPENAI_CLAIM_MODEL", "test-claim-model")
     monkeypatch.setenv("OPENAI_EMBEDDING_MODEL", "test-embedding-model")
+    monkeypatch.setenv("OPENAI_EXTRACTION_TIMEOUT_SECONDS", "75")
 
     providers = AnalysisRuntimeProviders.from_env()
 
@@ -360,8 +362,36 @@ def test_runtime_provider_bundle_can_be_constructed_from_configuration(
     assert isinstance(
         providers.claim_extraction, OpenAIClaimExtractionProvider
     )
+    assert providers.claim_extraction._timeout_seconds == 75
     assert isinstance(providers.embeddings, OpenAIEmbeddingProvider)
     providers.claim_extraction._client.close()
+
+
+def test_runtime_provider_uses_bounded_default_extraction_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-search-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-model-key")
+    monkeypatch.delenv("OPENAI_EXTRACTION_TIMEOUT_SECONDS", raising=False)
+
+    providers = AnalysisRuntimeProviders.from_env()
+
+    assert providers.claim_extraction._timeout_seconds == 90
+    providers.claim_extraction._client.close()
+
+
+@pytest.mark.parametrize("value", ["0", "inf", "301", "not-a-number"])
+def test_runtime_provider_rejects_unbounded_extraction_timeout(
+    monkeypatch, value: str
+) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-search-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-model-key")
+    monkeypatch.setenv("OPENAI_EXTRACTION_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(
+        AnalysisProviderUnavailableError, match="configuration is invalid"
+    ):
+        AnalysisRuntimeProviders.from_env()
 
 
 def test_semantic_uncertainty_is_not_promoted_by_runtime() -> None:

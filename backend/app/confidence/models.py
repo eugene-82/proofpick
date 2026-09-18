@@ -32,6 +32,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
     verified_claim_count: int = Field(default=0, ge=0)
     extracted_claim_count: int = Field(default=0, ge=0)
     evidence_coverage_limited: bool = False
+    unsafe_partial_risk: bool = False
 
     @classmethod
     def from_filtered_source(cls, source: FilteredSource) -> "ConfidenceSourceMetadata":
@@ -53,6 +54,7 @@ class ConfidenceSourceMetadata(ConfidenceModel):
                    evidence_quality=document.evidence_quality,
                    observation_state=document.observation_state,
                    evidence_coverage_limited=document.evidence_coverage_limited,
+                   unsafe_partial_risk=document.unsafe_partial_risk,
                    verified_claim_count=verified_claim_count,
                    extracted_claim_count=extracted_claim_count)
 

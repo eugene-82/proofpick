@@ -81,3 +81,4 @@ class EvidenceDocument(BaseModel):
     grounding_eligible: bool = True
     segments: tuple[EvidenceSegment, ...] = ()
     evidence_coverage_limited: bool = False
+    unsafe_partial_risk: bool = False

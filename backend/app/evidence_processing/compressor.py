@@ -36,6 +36,7 @@ class CompressionResult:
     grounding_eligible: bool
     segments: tuple[EvidenceSegment, ...]
     evidence_coverage_limited: bool
+    unsafe_partial_risk: bool
 
 
 class EvidenceCompressor:
@@ -54,7 +55,7 @@ class EvidenceCompressor:
                     grounding_eligible=True,
                     original_start=0, original_end=len(text),
                 ),),
-                False,
+                False, False,
             )
         units = [
             part.strip()
@@ -69,7 +70,7 @@ class EvidenceCompressor:
                     text=excerpt, complete=False, truncated=True,
                     grounding_eligible=False,
                 ),),
-                True,
+                True, bool(RISK_PATTERN.search(excerpt)),
             )
 
         mandatory = {0, len(units) // 2, len(units) - 1}
@@ -104,9 +105,15 @@ class EvidenceCompressor:
                     ordered_mandatory, quotas, sections, strict=True
                 )
             )
+            unsafe_partial_risk = any(
+                (not segment.grounding_eligible)
+                and bool(RISK_PATTERN.search(segment.text))
+                for segment in segments
+            )
             return CompressionResult(
                 " ".join(sections).rstrip(), True, grounding_text,
                 grounding_text is not None, segments, True,
+                unsafe_partial_risk,
             )
 
         selected = set(ordered_mandatory)
@@ -127,7 +134,7 @@ class EvidenceCompressor:
             for index in sorted(selected)
         )
         return CompressionResult(
-            result.rstrip(), True, result.rstrip(), True, segments, True
+            result.rstrip(), True, result.rstrip(), True, segments, True, False
         )
 
     @staticmethod

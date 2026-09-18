@@ -412,6 +412,98 @@ def test_unsafe_partial_severe_evidence_blocks_positive_only_buy() -> None:
     assert decision.decision is not PurchaseDecision.BUY
 
 
+def test_unrelated_safe_coverage_limited_document_does_not_veto_buy() -> None:
+    registry = SourceIdentityRegistry(analysis_id="safe-coverage-limited")
+    filterer = DeterministicSourceFilter(registry=registry)
+    positive_contexts = (
+        "I tested it every morning at home.",
+        "We used it nightly in a workshop.",
+        "I owned it through a busy winter.",
+        "I used it on two floors each weekend.",
+    )
+    positive_results = [
+        SearchResult(
+            url=f"https://safe-{index}.example/review",
+            raw_content=f"{context} The controls worked reliably.",
+        )
+        for index, context in enumerate(positive_contexts)
+    ]
+    neutral_results = [
+        SearchResult(
+            url=f"https://neutral-{index}.example/review",
+            raw_content=(
+                "An owner describes the included documentation and packaging "
+                f"in note {index}."
+            ),
+        )
+        for index in range(3)
+    ]
+    unrelated_long_document = SearchResult(
+        url="https://unrelated.example/review",
+        raw_content=(
+            "Opening notes cover the packaging. "
+            "The reviewer describes the included manual. "
+            "Several paragraphs discuss desk layout. "
+            "A middle section covers the box dimensions. "
+            "The closing notes describe recyclable paper inserts."
+        ),
+    )
+    filterer.filter(
+        [*positive_results, *neutral_results, unrelated_long_document]
+    )
+    sources = registry.retained_sources()
+    assert len(sources) == 8
+    documents = DeterministicEvidenceProcessor(
+        EvidenceBudgetPolicy(max_chars_per_source=160)
+    ).process_all(sources)
+    unrelated = next(
+        item for item in documents if item.domain == "unrelated.example"
+    )
+    assert unrelated.evidence_coverage_limited
+    assert all(segment.grounding_eligible for segment in unrelated.segments)
+
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    safe_documents = [
+        item for item in documents if item.domain.startswith("safe-")
+    ]
+    claims = [
+        claim(
+            "The controls worked reliably.",
+            "The controls worked reliably.",
+            source_id=item.source_key,
+            sentiment="positive",
+            severity=1,
+            target_product_id=product.canonical_name,
+            aspect="comfort",
+        )
+        for item in safe_documents
+    ]
+    _, assessments = ClaimGroundingValidator(
+        product
+    ).validate_with_assessments(
+        ClaimExtractionPayload(claims=claims), documents
+    )
+    snapshot = EvaluationSnapshot.create(
+        analysis_id=registry.analysis_id,
+        product=product,
+        registry=registry,
+        sources=sources,
+        evidence_documents=documents,
+        grounding_assessments=assessments,
+    )
+    clustered = SemanticClaimClusterer(
+        VectorProvider({"comfort | The controls worked reliably.": [1.0, 0.0]})
+    ).cluster_snapshot(snapshot)
+    confidence = EvidenceConfidenceEngine().evaluate_snapshot(snapshot, clustered)
+    decision = PurchaseDecisionEngine().evaluate_snapshot(
+        snapshot, confidence, clustered
+    )
+
+    assert confidence.metrics.independent_source_count == 4
+    assert confidence.quality_gate_passed
+    assert decision.decision is PurchaseDecision.BUY
+
+
 def test_first_day_and_warranty_stays_first_impression() -> None:
     source = "I used it today and the warranty lasts for 12 months."
     first_day = claim(

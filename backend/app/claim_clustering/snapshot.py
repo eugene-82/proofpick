@@ -392,6 +392,7 @@ class EvaluationSnapshot(BaseModel):
                     "grounding_eligible": document.grounding_eligible,
                     "content_hash": document.content_hash,
                     "evidence_coverage_limited": document.evidence_coverage_limited,
+                    "unsafe_partial_risk": document.unsafe_partial_risk,
                     "segments": [
                         segment.model_dump(mode="json")
                         for segment in document.segments

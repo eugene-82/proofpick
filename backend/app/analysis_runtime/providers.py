@@ -12,7 +12,6 @@ from app.claim_clustering.openai_provider import (
 from app.claim_extraction.base import ClaimExtractionProvider
 from app.claim_extraction.exceptions import ClaimProviderConfigurationError
 from app.claim_extraction.openai_provider import (
-    DEFAULT_OPENAI_CLAIM_MODEL,
     OpenAIClaimExtractionProvider,
 )
 from app.claim_extraction.verification import (
@@ -44,12 +43,7 @@ class AnalysisRuntimeProviders:
             )
 
         try:
-            extraction = OpenAIClaimExtractionProvider(
-                api_key=openai_key,
-                model=os.getenv(
-                    "OPENAI_CLAIM_MODEL", DEFAULT_OPENAI_CLAIM_MODEL
-                ),
-            )
+            extraction = OpenAIClaimExtractionProvider.from_env()
             embeddings = OpenAIEmbeddingProvider(
                 api_key=openai_key,
                 model=os.getenv(

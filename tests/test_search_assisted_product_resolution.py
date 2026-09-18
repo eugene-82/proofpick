@@ -9,6 +9,7 @@ def result(index: int, title: str, text: str | None = None) -> SearchResult:
         title=title,
         url=f"https://review-{index}.example.com/product",
         snippet=text or title,
+        raw_content=text,
     )
 
 
@@ -163,3 +164,124 @@ def test_downstream_filter_is_not_limited_to_confirmation_window() -> None:
     ]
 
     assert resolver.supporting_results(candidate, exact_results) == exact_results
+
+
+def test_downstream_filter_retains_brand_omitted_exact_model_review() -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate("Logitech MX Master 3S")
+    assert candidate is not None
+    review = result(
+        1,
+        "MX Master 3S Review",
+        "After six months, my Logitech MX Master 3S still tracks reliably.",
+    )
+
+    assert resolver.supporting_results(candidate, [review]) == [review]
+
+
+def test_downstream_filter_can_confirm_exact_identity_in_body() -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate("Logitech MX Master 3S")
+    assert candidate is not None
+    community_post = result(
+        1,
+        "Six months later: an owner update",
+        "I have used the Logitech MX Master 3S daily for six months.",
+    )
+
+    assert resolver.supporting_results(candidate, [community_post]) == [
+        community_post
+    ]
+
+
+def test_brand_omitted_surface_rejects_explicit_competing_brand() -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate("Logitech MX Master 3S")
+    assert candidate is not None
+    wrong_brand = result(
+        1,
+        "MX Master 3S Review",
+        "This Acme MX Master 3S mouse was tested for six months.",
+    )
+
+    assert resolver.supporting_results(candidate, [wrong_brand]) == []
+
+
+@pytest.mark.parametrize(
+    ("query", "competing_title", "competing_body"),
+    [
+        (
+            "Sony WH-1000XM5",
+            "Sony WH-1000XM4 long-term review",
+            "The Sony WH-1000XM4 was tested for a year.",
+        ),
+        (
+            "Apple AirPods Pro 2",
+            "AirPods Pro long-term review",
+            "The Apple AirPods Pro was tested for a year.",
+        ),
+        (
+            "Nintendo Switch OLED",
+            "Nintendo Switch long-term review",
+            "The Nintendo Switch was tested for a year.",
+        ),
+    ],
+)
+def test_downstream_filter_rejects_generation_or_variant_mismatch(
+    query: str, competing_title: str, competing_body: str
+) -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate(query)
+    assert candidate is not None
+
+    assert resolver.supporting_results(
+        candidate, [result(1, competing_title, competing_body)]
+    ) == []
+
+
+def test_generic_category_page_is_not_promoted_by_body_mention() -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate("Logitech MX Master 3S")
+    assert candidate is not None
+    category_page = result(
+        1,
+        "Best wireless mouse picks",
+        "Our list includes the Logitech MX Master 3S among many products.",
+    )
+
+    assert resolver.supporting_results(candidate, [category_page]) == []
+
+
+def test_mx_like_result_set_retains_reviews_and_rejects_competing_results() -> None:
+    resolver = SearchAssistedIdentityResolver()
+    candidate = resolver.provisional_candidate("Logitech MX Master 3S")
+    assert candidate is not None
+    retained_reviews = [
+        result(
+            index,
+            (
+                "Logitech MX Master 3S owner review"
+                if index <= 4
+                else "MX Master 3S long-term review"
+            ),
+            "I used the Logitech MX Master 3S daily for six months.",
+        )
+        for index in range(1, 9)
+    ]
+    rejected_results = [
+        result(9, "Logitech MX Master 2S review"),
+        result(10, "Logitech MX Master 3 review"),
+        result(11, "Acme MX Master 3S review", "Acme MX Master 3S mouse."),
+        result(
+            12,
+            "Best wireless mouse picks",
+            "The Logitech MX Master 3S appears in this product roundup.",
+        ),
+        result(13, "Logitech MX Master 3S vs MX Master 3"),
+        result(14, "Mouse accessories and replacement parts"),
+        result(15, "Logitech MX Keys keyboard review"),
+    ]
+    raw_results = [*retained_reviews, *rejected_results]
+
+    assert len(raw_results) == 15
+    assert resolver.supporting_results(candidate, raw_results) == retained_reviews

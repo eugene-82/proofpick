@@ -16,6 +16,7 @@ $env:TAVILY_API_KEY = [Net.NetworkCredential]::new("", $tavilySecret).Password
 $env:OPENAI_API_KEY = [Net.NetworkCredential]::new("", $openaiSecret).Password
 $env:OPENAI_CLAIM_MODEL = "gpt-4.1-mini"
 $env:OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+$env:OPENAI_EXTRACTION_TIMEOUT_SECONDS = "90"
 $env:FRONTEND_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 Set-Location backend
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -73,11 +74,14 @@ TAVILY_API_KEY=<Railway secret>
 OPENAI_API_KEY=<Railway secret>
 OPENAI_CLAIM_MODEL=gpt-4.1-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_EXTRACTION_TIMEOUT_SECONDS=90
 FRONTEND_ORIGINS=https://<your-vercel-domain>
 ```
 
 Railway injects `PORT`; do not set a fixed production port. Model variables are
-optional overrides, while both provider keys are required for live analysis.
+optional overrides. The extraction timeout defaults to 90 seconds and accepts
+only finite values up to 300 seconds. Both provider keys are required for live
+analysis.
 
 ## C. Frontend on Vercel
 

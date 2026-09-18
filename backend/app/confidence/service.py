@@ -183,7 +183,10 @@ class EvidenceConfidenceEngine:
         durability_aspects = {
             "battery", "battery_health", "battery_life", "durability", "reliability"
         }
-        if any(source.evidence_coverage_limited for source in coverage_sources):
+        # Coverage limitation is diagnostic by itself. Only an unsafe partial
+        # carrying a risk signal can veto the decision; fully selected segments
+        # from an unrelated long document must not block otherwise safe claims.
+        if any(source.unsafe_partial_risk for source in coverage_sources):
             issues.append(ConfidenceQualityIssue.UNSAFE_PARTIAL_EVIDENCE)
         durability_clusters = [
             cluster for cluster in clusters

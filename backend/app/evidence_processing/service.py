@@ -57,6 +57,7 @@ class DeterministicEvidenceProcessor(EvidenceProcessor):
             grounding_eligible=compressed.grounding_eligible,
             segments=compressed.segments,
             evidence_coverage_limited=compressed.evidence_coverage_limited,
+            unsafe_partial_risk=compressed.unsafe_partial_risk,
         )
 
     def process_all(self, sources: Iterable[FilteredSource]) -> list[EvidenceDocument]:

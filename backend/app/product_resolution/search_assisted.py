@@ -28,6 +28,23 @@ _GENERIC_LEADERS = frozenset(
 _ACCESSORY_TERMS = frozenset(
     {"case", "cover", "replacement", "strap", "tips"}
 )
+_IDENTITY_PREFIX_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "for",
+        "my",
+        "new",
+        "of",
+        "our",
+        "the",
+        "this",
+        "used",
+        "using",
+        "with",
+    }
+)
 
 
 def _compact(token: str) -> str:
@@ -36,6 +53,12 @@ def _compact(token: str) -> str:
 
 def _surface_terms(value: str) -> frozenset[str]:
     return frozenset(_compact(token) for token in _TOKEN_RE.findall(value))
+
+
+def _surface_sequence(value: str) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (token, _compact(token)) for token in _TOKEN_RE.findall(value)
+    )
 
 
 def _is_model_like(token: str) -> bool:
@@ -123,7 +146,9 @@ class SearchAssistedIdentityResolver:
         candidate: ProvisionalProductIdentity,
         results: list[SearchResult],
     ) -> ProductResolution | None:
-        supporting = self.supporting_results(
+        # Search confirmation remains stricter than downstream filtering: the
+        # identity must first be established by full brand/product surfaces.
+        supporting = self._confirmation_supporting_results(
             candidate,
             results,
             max_results=self.max_confirmation_results,
@@ -167,8 +192,22 @@ class SearchAssistedIdentityResolver:
         *,
         max_results: int | None = None,
     ) -> list[SearchResult]:
-        """Return only results whose title/URL identity matches every input term."""
+        """Filter results against an already confirmed canonical identity."""
 
+        candidates = results if max_results is None else results[:max_results]
+        return [
+            result
+            for result in candidates
+            if self._matches_confirmed_identity(candidate, result)
+        ]
+
+    def _confirmation_supporting_results(
+        self,
+        candidate: ProvisionalProductIdentity,
+        results: list[SearchResult],
+        *,
+        max_results: int | None = None,
+    ) -> list[SearchResult]:
         required = set(candidate.required_terms)
         candidates = results if max_results is None else results[:max_results]
         return [
@@ -180,11 +219,97 @@ class SearchAssistedIdentityResolver:
             )
         ]
 
+    def _matches_confirmed_identity(
+        self,
+        candidate: ProvisionalProductIdentity,
+        result: SearchResult,
+    ) -> bool:
+        primary_text = self._primary_identity_text(result)
+        primary_terms = _surface_terms(primary_text)
+        body_text = self._body_identity_text(result)
+        required = set(candidate.required_terms)
+        product_terms = required - {_compact(candidate.brand)}
+
+        if _COMPARISON_RE.search(primary_text):
+            return False
+        if self._has_explicit_competing_brand(
+            candidate, f"{primary_text} {body_text}"
+        ):
+            return False
+
+        if required.issubset(primary_terms):
+            return True
+
+        # An exact model/generation/variant is mandatory even when the brand is
+        # omitted from a blog or community title.
+        if product_terms.issubset(primary_terms):
+            return True
+
+        if not self._contains_sequence(body_text, candidate.required_terms):
+            return False
+        if self._is_generic_category_surface(result, primary_terms, product_terms):
+            return False
+        return True
+
     @staticmethod
-    def _primary_identity_terms(result: SearchResult) -> frozenset[str]:
+    def _contains_sequence(value: str, expected: tuple[str, ...]) -> bool:
+        normalized = tuple(item[1] for item in _surface_sequence(value))
+        length = len(expected)
+        return any(
+            normalized[index:index + length] == expected
+            for index in range(len(normalized) - length + 1)
+        )
+
+    @staticmethod
+    def _has_explicit_competing_brand(
+        candidate: ProvisionalProductIdentity,
+        value: str,
+    ) -> bool:
+        product_sequence = tuple(candidate.required_terms[1:])
+        if not product_sequence:
+            return False
+        surface = _surface_sequence(value)
+        normalized = tuple(item[1] for item in surface)
+        brand = _compact(candidate.brand)
+        length = len(product_sequence)
+        for index in range(len(normalized) - length + 1):
+            if normalized[index:index + length] != product_sequence or index == 0:
+                continue
+            raw_prefix, prefix = surface[index - 1]
+            if prefix == brand or prefix in _IDENTITY_PREFIX_STOPWORDS:
+                continue
+            if raw_prefix[:1].isupper() and raw_prefix[1:].islower():
+                return True
+        return False
+
+    @staticmethod
+    def _is_generic_category_surface(
+        result: SearchResult,
+        primary_terms: frozenset[str],
+        product_terms: set[str],
+    ) -> bool:
+        if product_terms & primary_terms:
+            return False
+        title_tokens = _surface_sequence(result.title or "")
+        return bool(title_tokens and title_tokens[0][1] in _GENERIC_LEADERS)
+
+    @staticmethod
+    def _primary_identity_text(result: SearchResult) -> str:
         parsed = urlsplit(str(result.url))
         path = unquote(parsed.path.replace("/", " "))
-        return _surface_terms(f"{result.title or ''} {path}")
+        return f"{result.title or ''} {path}"
+
+    @staticmethod
+    def _body_identity_text(result: SearchResult) -> str:
+        snippet = (result.snippet or "")[:500]
+        raw_content = (result.raw_content or "")[:1_000]
+        return f"{snippet} {raw_content}".strip()
+
+    @staticmethod
+    def _primary_identity_terms(result: SearchResult) -> frozenset[str]:
+        return _surface_terms(
+            SearchAssistedIdentityResolver._primary_identity_text(result)
+        )
 
     @staticmethod
     def _fallback_identity_terms(result: SearchResult) -> frozenset[str]:
