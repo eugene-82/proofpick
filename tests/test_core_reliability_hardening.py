@@ -459,7 +459,9 @@ def test_previous_generation_evidence_is_rejected() -> None:
             payload, [document("AirPods Pro 1 battery failed after six months.")]
         )
 
-    assert error.value.assessments[0].reason_code is GroundingReasonCode.VERIFICATION_BINDING_MISMATCH
+    assert error.value.assessments[0].reason_code is (
+        GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+    )
 
 
 def test_product_identity_guards_accessory_comparison_tracking_and_suffixes() -> None:

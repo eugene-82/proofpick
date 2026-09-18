@@ -1,5 +1,6 @@
 """Deterministic provenance gate around semantic verification."""
 
+import re
 from collections.abc import Sequence
 
 from app.evidence_processing.models import EvidenceDocument
@@ -26,6 +27,21 @@ from .verification import (
 OBSERVED_TYPES = frozenset(
     {ObservationType.USAGE, ObservationType.OWNERSHIP, ObservationType.TEST}
 )
+
+_GENERATION_VALUES = {
+    "1": 1,
+    "1st": 1,
+    "first": 1,
+    "2": 2,
+    "2nd": 2,
+    "second": 2,
+    "3": 3,
+    "3rd": 3,
+    "third": 3,
+}
+_NUMBERED_GENERATION = r"1st|2nd|3rd|1|2|3"
+_WORD_GENERATION = r"first|second|third"
+_ANY_GENERATION = rf"{_NUMBERED_GENERATION}|{_WORD_GENERATION}"
 
 
 
@@ -153,7 +169,63 @@ class ClaimGroundingValidator:
                 claim, GroundingState.REJECTED, reason,
                 f"evidence fragment is not in a complete eligible span of {claim.source_id}",
             )
+        conflicting_generations = self._conflicting_generations(claim)
+        if conflicting_generations:
+            return self._assessment(
+                claim,
+                GroundingState.REJECTED,
+                GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH,
+                "claim explicitly references a generation that conflicts "
+                "with the resolved target product",
+            )
         return None
+
+    def _conflicting_generations(self, claim: ExtractedClaim) -> frozenset[int]:
+        target = self._target_product
+        if target is None or target.generation is None or target.product_name is None:
+            return frozenset()
+        target_generation = self._generation_value(target.generation)
+        if target_generation is None:
+            return frozenset()
+
+        relation = claim.semantic_relation
+        subject_generations = (
+            self._explicit_generations(relation.subject, target.product_name)
+            if relation is not None
+            else frozenset()
+        )
+        mentioned_generations = subject_generations or self._explicit_generations(
+            claim.evidence_fragment, target.product_name
+        )
+        if not mentioned_generations or target_generation in mentioned_generations:
+            return frozenset()
+        return mentioned_generations
+
+    @staticmethod
+    def _generation_value(value: str) -> int | None:
+        match = re.search(rf"\b(?P<generation>{_ANY_GENERATION})\b", value, re.I)
+        if match is None:
+            return None
+        return _GENERATION_VALUES[match.group("generation").casefold()]
+
+    @staticmethod
+    def _explicit_generations(text: str, product_name: str) -> frozenset[int]:
+        family = r"\s+".join(re.escape(part) for part in product_name.split())
+        patterns = (
+            rf"(?<![A-Za-z0-9]){family}\s*\(?\s*"
+            rf"(?P<generation>{_NUMBERED_GENERATION})"
+            rf"(?:[-\s]+generation)?\s*\)?(?=$|[^A-Za-z0-9])",
+            rf"(?<![A-Za-z0-9]){family}\s*\(?\s*"
+            rf"(?P<generation>{_WORD_GENERATION})[-\s]+generation"
+            rf"\s*\)?(?=$|[^A-Za-z0-9])",
+            rf"(?<![A-Za-z0-9])(?P<generation>{_ANY_GENERATION})"
+            rf"[-\s]+generation\s+{family}(?=$|[^A-Za-z0-9])",
+        )
+        return frozenset(
+            _GENERATION_VALUES[match.group("generation").casefold()]
+            for pattern in patterns
+            for match in re.finditer(pattern, text, re.I)
+        )
 
     def _assess_verdict(
         self,

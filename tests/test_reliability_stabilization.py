@@ -349,6 +349,71 @@ def _snapshot_fixture():
     return snapshot
 
 
+def test_generation_conflict_cannot_enter_snapshot_or_cluster() -> None:
+    registry = SourceIdentityRegistry(analysis_id="generation-conflict")
+    source_text = (
+        "My AirPods Pro 2 remained connected. "
+        "My AirPods Pro 3 disconnected from other devices."
+    )
+    sources = DeterministicSourceFilter(registry=registry).filter([
+        candidate("https://source.example/generations", source_text)
+    ]).accepted_sources
+    documents = DeterministicEvidenceProcessor().process_all(sources)
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    valid = claim(
+        "AirPods Pro 2 remained connected.",
+        "AirPods Pro 2 remained connected.",
+        aspect="connectivity",
+        sentiment="positive",
+        target_product_id=product.canonical_name,
+    )
+    valid = valid.model_copy(update={
+        "semantic_relation": valid.semantic_relation.model_copy(
+            update={"subject": "AirPods Pro 2"}
+        )
+    })
+    conflict = claim(
+        "AirPods Pro 3 disconnected from other devices.",
+        "AirPods Pro 3 disconnected from other devices.",
+        aspect="connectivity",
+        target_product_id=product.canonical_name,
+    )
+    conflict = conflict.model_copy(update={
+        "semantic_relation": conflict.semantic_relation.model_copy(
+            update={"subject": "AirPods Pro 3"}
+        )
+    })
+
+    _, assessments = ClaimGroundingValidator(product).validate_with_assessments(
+        ClaimExtractionPayload(claims=[valid, conflict]), documents
+    )
+    verified_assessments = [
+        item for item in assessments if item.state is GroundingState.VERIFIED
+    ]
+    snapshot = EvaluationSnapshot.create(
+        analysis_id="generation-conflict",
+        product=product,
+        registry=registry,
+        sources=sources,
+        evidence_documents=documents,
+        grounding_assessments=verified_assessments,
+    )
+    vector = {"connectivity | AirPods Pro 2 remained connected.": [1.0, 0.0]}
+    clustered = SemanticClaimClusterer(VectorProvider(vector)).cluster_snapshot(snapshot)
+
+    assert assessments[1].reason_code is GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+    assert [item.claim for item in verified_assessments] == [valid]
+    clustered_claims = [
+        member.claim
+        for cluster in clustered.clusters
+        for member in cluster.members
+    ]
+    assert [item.claim for item in clustered_claims] == [valid.claim]
+    assert [item.semantic_relation.subject for item in clustered_claims] == [
+        "AirPods Pro 2"
+    ]
+
+
 def test_snapshot_rejects_unverified_claim_and_mismatched_decision_inputs() -> None:
     snapshot = _snapshot_fixture()
     bad = GroundingAssessment(

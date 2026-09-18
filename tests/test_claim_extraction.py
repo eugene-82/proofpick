@@ -5,12 +5,15 @@ import pytest
 from pydantic import ValidationError
 
 from app.claim_extraction import (
+    ClaimExtractionPayload,
     ClaimExtractionPolicy,
     ClaimExtractionProvider,
+    ClaimGroundingError,
     ClaimGroundingValidator,
     ClaimProviderError,
     ExtractedClaim,
     GroundingReasonCode,
+    GroundingState,
     ExtractionFailureCode,
     StructuredClaimExtractor,
 )
@@ -95,6 +98,29 @@ def claim(
             "verification_status": "VERIFIED",
         },
     }
+
+
+def generation_claim(
+    subject: str,
+    fragment: str,
+    *,
+    target_product_id: str,
+) -> ExtractedClaim:
+    candidate = claim(
+        "S001",
+        fragment,
+        aspect="connectivity",
+        sentiment="negative",
+        severity=3,
+    )
+    candidate["semantic_relation"].update(
+        {
+            "target_product_id": target_product_id,
+            "subject": subject,
+            "predicate": "disconnect from other devices",
+        }
+    )
+    return ExtractedClaim.model_validate(candidate)
 
 
 def test_positive_negative_neutral_claims_and_usage_period() -> None:
@@ -361,3 +387,118 @@ def test_resolved_product_identity_reaches_extraction_and_verification() -> None
         result.claims[0].semantic_relation.target_product_id
         == product.canonical_name
     )
+
+
+@pytest.mark.parametrize(
+    ("subject", "fragment"),
+    [
+        (
+            "AirPods Pro 3",
+            "my AirPods Pro 3 were disconnecting from other devices",
+        ),
+        (
+            "third-generation AirPods Pro",
+            "my third-generation AirPods Pro were disconnecting from other devices",
+        ),
+        (
+            "AirPods Pro 1st generation",
+            "my AirPods Pro 1st generation had a battery issue",
+        ),
+        (
+            "AirPods Pro",
+            "the third issue was that my AirPods Pro 3 were disconnecting",
+        ),
+    ],
+)
+def test_explicit_cross_generation_claim_is_rejected(
+    subject: str, fragment: str
+) -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = generation_claim(
+        subject,
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    with pytest.raises(ClaimGroundingError) as error:
+        ClaimGroundingValidator(product).validate_with_assessments(
+            ClaimExtractionPayload(claims=[candidate]),
+            [evidence("S001", fragment)],
+        )
+
+    assessment = error.value.assessments[0]
+    assert assessment.state is GroundingState.REJECTED
+    assert assessment.reason_code is GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("subject", "fragment"),
+    [
+        ("AirPods Pro 2", "my AirPods Pro 2 remained connected"),
+        (
+            "2nd generation AirPods Pro",
+            "my 2nd generation AirPods Pro remained connected",
+        ),
+        ("AirPods Pro", "my AirPods Pro remained connected"),
+        (
+            "AirPods Pro",
+            "the third issue was that my AirPods Pro disconnected once",
+        ),
+    ],
+)
+def test_matching_or_generic_generation_claim_is_allowed(
+    subject: str, fragment: str
+) -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    candidate = generation_claim(
+        subject,
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    verified, assessments = ClaimGroundingValidator(
+        product
+    ).validate_with_assessments(
+        ClaimExtractionPayload(claims=[candidate]),
+        [evidence("S001", fragment)],
+    )
+
+    assert verified.claims == [candidate]
+    assert assessments[0].state is GroundingState.VERIFIED
+
+
+def test_subject_generation_takes_priority_over_comparison_fragment() -> None:
+    product = DeterministicProductResolver().resolve("AirPods Pro 2")
+    fragment = "AirPods Pro 2 stayed connected but my AirPods Pro 3 disconnected."
+    candidate = generation_claim(
+        "AirPods Pro 3",
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    with pytest.raises(ClaimGroundingError) as error:
+        ClaimGroundingValidator(product).validate(
+            ClaimExtractionPayload(claims=[candidate]),
+            [evidence("S001", fragment)],
+        )
+
+    assert error.value.assessments[0].reason_code is (
+        GroundingReasonCode.PRODUCT_IDENTITY_MISMATCH
+    )
+
+
+def test_generation_guard_is_inactive_without_target_generation() -> None:
+    product = DeterministicProductResolver().resolve("Galaxy Buds3 Pro")
+    fragment = "my AirPods Pro 3 were disconnecting from other devices"
+    candidate = generation_claim(
+        "AirPods Pro 3",
+        fragment,
+        target_product_id=product.canonical_name,
+    )
+
+    verified = ClaimGroundingValidator(product).validate(
+        ClaimExtractionPayload(claims=[candidate]),
+        [evidence("S001", fragment)],
+    )
+
+    assert verified.claims == [candidate]
