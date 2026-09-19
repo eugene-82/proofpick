@@ -12,7 +12,8 @@ export function AnalysisLoading() {
         <div>
           <p className="font-semibold text-[#183c31]">근거 조사를 진행하고 있습니다</p>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#59675f]">
-            검색과 검증에는 수 초에서 수 분이 걸릴 수 있습니다. 아래 항목은 조사 범위이며, 실시간 진행 단계나 완료율을 뜻하지 않습니다.
+            제품과 공개 자료의 양에 따라 분석에 수 분이 걸릴 수 있습니다. 페이지를 열어 두면 결과가 준비되는 즉시 표시됩니다.
+            아래 항목은 조사 범위이며, 실시간 진행 단계나 완료율을 뜻하지 않습니다.
           </p>
         </div>
       </div>

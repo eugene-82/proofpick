@@ -87,7 +87,7 @@ export function SearchForm({ isLoading, onSubmit }: SearchFormProps) {
                 {group.products.slice(0, 2).map((product) => (
                   <li key={product.canonicalName}>
                     <button
-                      className="w-full py-1 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
+                      className="min-h-11 w-full py-2.5 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
                       disabled={isLoading}
                       onClick={() => selectRecommendation(product.canonicalName)}
                       type="button"
@@ -101,7 +101,7 @@ export function SearchForm({ isLoading, onSubmit }: SearchFormProps) {
           ))}
         </div>
         <details className="border-t border-[#d5d0c4] pt-3">
-          <summary className="cursor-pointer select-none text-sm font-semibold text-[#35463f] marker:text-[#175c49]">
+          <summary className="min-h-11 cursor-pointer select-none py-3 text-sm font-semibold text-[#35463f] marker:text-[#175c49]">
             나머지 추천 제품 15개 보기
           </summary>
           <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
@@ -112,7 +112,7 @@ export function SearchForm({ isLoading, onSubmit }: SearchFormProps) {
                   {group.products.slice(2).map((product) => (
                     <li key={product.canonicalName}>
                       <button
-                        className="w-full py-1 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
+                        className="min-h-11 w-full py-2.5 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
                         disabled={isLoading}
                         onClick={() => selectRecommendation(product.canonicalName)}
                         type="button"

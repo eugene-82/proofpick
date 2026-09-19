@@ -1,5 +1,7 @@
 import type { PurchaseDecision } from "@/lib/types";
 
+import { displayProductName } from "@/lib/displayProductName";
+
 const decisionCopy: Record<
   PurchaseDecision,
   { label: string; description: string; style: string }
@@ -28,13 +30,14 @@ const decisionCopy: Record<
 
 export function DecisionSummary({ decision, product }: { decision: PurchaseDecision; product: string }) {
   const copy = decisionCopy[decision];
+  const productDisplayName = displayProductName(product);
   return (
     <section className={`border-l-4 border-y border-r px-5 py-6 sm:px-7 sm:py-7 ${copy.style}`}>
       <p className="text-xs font-bold uppercase tracking-[0.16em]">최종 구매 판단</p>
       <div className="mt-4 grid gap-5 md:grid-cols-[minmax(220px,0.7fr)_1.3fr] md:items-end">
         <div>
           <h2 className="font-serif text-4xl font-bold tracking-[-0.035em] sm:text-5xl">{copy.label}</h2>
-          <p className="mt-2 break-words text-sm font-medium opacity-80">{product}</p>
+          <p className="mt-2 break-words text-sm font-medium opacity-80">{productDisplayName}</p>
         </div>
         <p className="max-w-2xl text-base leading-7 text-[#27332e]">{copy.description}</p>
       </div>
