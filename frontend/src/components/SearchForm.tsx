@@ -2,6 +2,8 @@
 
 import { FormEvent, useState } from "react";
 
+import { recommendedProductGroups } from "@/lib/recommendedProducts";
+
 interface SearchFormProps {
   isLoading: boolean;
   onSubmit: (query: string) => void;
@@ -20,6 +22,14 @@ export function SearchForm({ isLoading, onSubmit }: SearchFormProps) {
     }
     setValidationMessage(null);
     onSubmit(normalized);
+  }
+
+  function selectRecommendation(canonicalName: string) {
+    setQuery(canonicalName);
+    setValidationMessage(null);
+    window.requestAnimationFrame(() => {
+      document.getElementById("product-query")?.focus();
+    });
   }
 
   return (
@@ -62,6 +72,62 @@ export function SearchForm({ isLoading, onSubmit }: SearchFormProps) {
           제품명이나 쇼핑 URL을 입력하면 공개된 사용 근거를 확인합니다.
         </p>
       )}
+      <section aria-labelledby="recommendation-heading" className="mt-7 border-t border-[#d5d0c4] pt-5">
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="text-sm font-semibold text-[#27332e]" id="recommendation-heading">
+            추천해서 분석해보세요
+          </h2>
+          <span className="metadata shrink-0">5개 분야</span>
+        </div>
+        <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
+          {recommendedProductGroups.map((group) => (
+            <div className="border-t border-[#ddd8cd] py-3" key={group.category}>
+              <h3 className="metadata font-semibold text-[#526059]">{group.category}</h3>
+              <ul className="mt-1.5 space-y-1">
+                {group.products.slice(0, 2).map((product) => (
+                  <li key={product.canonicalName}>
+                    <button
+                      className="w-full py-1 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
+                      disabled={isLoading}
+                      onClick={() => selectRecommendation(product.canonicalName)}
+                      type="button"
+                    >
+                      {product.displayName}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <details className="border-t border-[#d5d0c4] pt-3">
+          <summary className="cursor-pointer select-none text-sm font-semibold text-[#35463f] marker:text-[#175c49]">
+            나머지 추천 제품 15개 보기
+          </summary>
+          <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
+            {recommendedProductGroups.map((group) => (
+              <div className="border-t border-[#e1ddd3] py-3" key={group.category}>
+                <h3 className="metadata font-semibold text-[#526059]">{group.category}</h3>
+                <ul className="mt-1.5 space-y-1">
+                  {group.products.slice(2).map((product) => (
+                    <li key={product.canonicalName}>
+                      <button
+                        className="w-full py-1 text-left text-sm leading-5 text-[#175c49] underline decoration-[#a9beb5] underline-offset-4 transition hover:decoration-current disabled:cursor-not-allowed disabled:text-[#858b86]"
+                        disabled={isLoading}
+                        onClick={() => selectRecommendation(product.canonicalName)}
+                        type="button"
+                      >
+                        {product.displayName}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </details>
+        <p className="metadata mt-3">다른 제품명도 직접 입력할 수 있습니다.</p>
+      </section>
     </form>
   );
 }

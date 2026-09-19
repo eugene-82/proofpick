@@ -25,6 +25,7 @@ from app.confidence import ConfidenceInputError, ConfidenceResult, EvidenceConfi
 from app.decision import DecisionInputError, PurchaseDecisionEngine, PurchaseDecisionResult
 from app.evidence_processing import DeterministicEvidenceProcessor, EvidenceDocument
 from app.models import AnalysisStatus
+from app.product_catalog import canonicalize_demo_product
 from app.product_resolution.deterministic import DeterministicProductResolver
 from app.product_resolution.exceptions import ProductResolutionError
 from app.product_resolution.models import ProductResolution
@@ -85,19 +86,20 @@ class AnalysisRuntimeService:
     def analyze(self, query: str) -> AnalysisResponse:
         started_at = monotonic()
         search_query_count = 0
+        canonical_query = canonicalize_demo_product(query)
 
         def record_search_attempt() -> None:
             nonlocal search_query_count
             search_query_count += 1
 
         analysis_id = str(uuid4())
-        product = self._resolve_product(query)
+        product = self._resolve_product(canonical_query)
         provisional_candidate = None
         probe_results = []
         probe_query: str | None = None
         if product.ambiguous or not product.canonical_name:
             provisional_candidate = (
-                self._search_identity_resolver.provisional_candidate(query)
+                self._search_identity_resolver.provisional_candidate(canonical_query)
             )
             if provisional_candidate is None:
                 logger.info("product_identity_unresolved stage=initial")
