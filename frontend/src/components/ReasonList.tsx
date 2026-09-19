@@ -19,16 +19,16 @@ function humanizeReason(reason: string) {
 
 export function ReasonList({ reasons }: { reasons: string[] }) {
   return (
-    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6">
-      <h3 className="text-lg font-bold text-white">이 판단이 나온 이유</h3>
-      <ul className="mt-4 space-y-3">
-        {reasons.map((reason) => (
-          <li className="flex gap-3 text-sm leading-6 text-slate-300" key={reason}>
-            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" aria-hidden="true" />
-            {humanizeReason(reason)}
+    <section aria-labelledby="reason-title">
+      <h3 className="text-lg font-semibold tracking-[-0.02em] text-[#18211d]" id="reason-title">판단 근거 요약</h3>
+      <ol className="mt-3 divide-y divide-[#ded9ce] border-y border-[#ded9ce]">
+        {reasons.map((reason, index) => (
+          <li className="grid grid-cols-[2rem_1fr] gap-2 py-3 text-sm leading-6 text-[#455049]" key={reason}>
+            <span className="font-mono text-xs text-[#7a837d]" aria-hidden="true">0{index + 1}</span>
+            <span>{humanizeReason(reason)}</span>
           </li>
         ))}
-      </ul>
+      </ol>
     </section>
   );
 }

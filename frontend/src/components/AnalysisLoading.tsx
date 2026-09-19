@@ -1,54 +1,29 @@
-"use client";
-
-import { useEffect, useState } from "react";
-
-const stages = [
-  "제품을 확인하고 있습니다",
-  "공개된 사용 근거를 탐색하고 있습니다",
-  "출처와 주장을 검증하고 있습니다",
-  "반대되는 근거도 확인하고 있습니다",
-  "근거를 바탕으로 판단을 정리하고 있습니다",
-];
+const work = ["제품 식별", "공개 근거 탐색", "주장·출처 검토", "반대 근거 확인", "판단 정리"];
 
 export function AnalysisLoading() {
-  const [stage, setStage] = useState(0);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setStage((current) => Math.min(current + 1, stages.length - 1));
-    }, 2400);
-    return () => window.clearInterval(timer);
-  }, []);
-
   return (
     <section
       aria-live="polite"
       aria-busy="true"
-      className="rounded-2xl border border-sky-400/20 bg-sky-400/5 p-6 sm:p-8"
+      className="border-y border-[#b9c9c1] bg-[#eef3ef] px-1 py-6 sm:px-5 sm:py-8"
     >
-      <div className="flex items-start gap-4">
-        <span className="mt-1 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-sky-400/30 border-t-sky-300" aria-hidden="true" />
+      <div className="flex items-start gap-4 sm:gap-5">
+        <span className="mt-1.5 h-3 w-3 shrink-0 animate-pulse bg-[#175c49] motion-reduce:animate-none" aria-hidden="true" />
         <div>
-          <p className="font-semibold text-sky-200">{stages[stage]}</p>
-          <p className="mt-1 text-sm leading-6 text-slate-400">
-            검색과 검증에는 수 초에서 수십 초가 걸릴 수 있습니다. 진행률을 임의로 표시하지 않습니다.
+          <p className="font-semibold text-[#183c31]">근거 조사를 진행하고 있습니다</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#59675f]">
+            검색과 검증에는 수 초에서 수 분이 걸릴 수 있습니다. 아래 항목은 조사 범위이며, 실시간 진행 단계나 완료율을 뜻하지 않습니다.
           </p>
         </div>
       </div>
-      <ol className="mt-6 grid gap-2 text-sm sm:grid-cols-5">
-        {stages.map((label, index) => (
-          <li
-            className={`rounded-lg border px-3 py-2 ${
-              index <= stage
-                ? "border-sky-400/30 bg-sky-400/10 text-sky-100"
-                : "border-slate-800 text-slate-600"
-            }`}
-            key={label}
-          >
-            {label.replace("하고 있습니다", "")}
+      <ul className="mt-6 grid gap-x-6 gap-y-2 border-t border-[#cbd6d0] pt-4 text-sm text-[#56645d] sm:grid-cols-2 lg:grid-cols-5">
+        {work.map((label, index) => (
+          <li className="flex items-center gap-2" key={label}>
+            <span className="font-mono text-xs text-[#7a8881]" aria-hidden="true">0{index + 1}</span>
+            {label}
           </li>
         ))}
-      </ol>
+      </ul>
     </section>
   );
 }

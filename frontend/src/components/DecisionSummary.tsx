@@ -7,36 +7,36 @@ const decisionCopy: Record<
   BUY: {
     label: "BUY",
     description: "현재 확인된 근거에서는 구매를 막을 만한 반복적인 문제가 충분히 확인되지 않았습니다.",
-    style: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+    style: "border-[#277056] bg-[#edf5ef] text-[#194f3b]",
   },
   BUY_IF: {
     label: "BUY IF",
     description: "조건에 따라 만족도가 달라질 수 있어 아래 주의점을 먼저 확인하는 것이 좋습니다.",
-    style: "border-amber-400/30 bg-amber-400/10 text-amber-100",
+    style: "border-[#a07b27] bg-[#f7f1df] text-[#715617]",
   },
   SKIP: {
     label: "SKIP",
     description: "여러 독립 근거에서 구매를 재고할 만한 문제가 반복적으로 확인되었습니다.",
-    style: "border-rose-400/30 bg-rose-400/10 text-rose-100",
+    style: "border-[#a1483e] bg-[#f8eeeb] text-[#7d3029]",
   },
   EARLY_ADOPTER: {
     label: "EARLY ADOPTER",
     description: "아직 확신할 만큼 독립적인 사용 근거가 충분하지 않습니다.",
-    style: "border-violet-400/30 bg-violet-400/10 text-violet-100",
+    style: "border-[#5e7580] bg-[#eef2f3] text-[#3d5661]",
   },
 };
 
 export function DecisionSummary({ decision, product }: { decision: PurchaseDecision; product: string }) {
   const copy = decisionCopy[decision];
   return (
-    <section className={`rounded-2xl border p-6 sm:p-8 ${copy.style}`}>
-      <p className="text-sm font-semibold uppercase tracking-[0.18em]">최종 구매 판단</p>
-      <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <section className={`border-l-4 border-y border-r px-5 py-6 sm:px-7 sm:py-7 ${copy.style}`}>
+      <p className="text-xs font-bold uppercase tracking-[0.16em]">최종 구매 판단</p>
+      <div className="mt-4 grid gap-5 md:grid-cols-[minmax(220px,0.7fr)_1.3fr] md:items-end">
         <div>
-          <h2 className="text-3xl font-black tracking-tight sm:text-4xl">{copy.label}</h2>
-          <p className="mt-2 text-sm opacity-80">{product}</p>
+          <h2 className="font-serif text-4xl font-bold tracking-[-0.035em] sm:text-5xl">{copy.label}</h2>
+          <p className="mt-2 break-words text-sm font-medium opacity-80">{product}</p>
         </div>
-        <p className="max-w-2xl leading-7 text-slate-100">{copy.description}</p>
+        <p className="max-w-2xl text-base leading-7 text-[#27332e]">{copy.description}</p>
       </div>
     </section>
   );

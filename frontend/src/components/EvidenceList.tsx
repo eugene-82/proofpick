@@ -10,42 +10,45 @@ export function EvidenceList({ claims, sources }: { claims: ClaimSummary[]; sour
   const sourceById = new Map(sources.map((source) => [source.source_id, source]));
 
   return (
-    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 sm:p-8">
+    <section className="section-rule" aria-labelledby="evidence-title">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <h3 className="text-xl font-bold text-white">검증된 주장과 근거</h3>
-        <span className="text-sm text-slate-400">{claims.length}개 주장 묶음</span>
+        <div>
+          <p className="eyebrow">Verified claims</p>
+          <h3 className="mt-2 text-xl font-semibold tracking-[-0.02em] text-[#18211d]" id="evidence-title">검증된 주장과 근거</h3>
+        </div>
+        <span className="metadata">{claims.length}개 주장 묶음</span>
       </div>
       {claims.length === 0 ? (
-        <p className="mt-4 text-slate-400">현재 판단에 사용할 수 있는 검증된 주장이 없습니다.</p>
+        <p className="mt-5 border-y border-[#ded9ce] py-5 text-[#677069]">현재 판단에 사용할 수 있는 검증된 주장이 없습니다.</p>
       ) : (
-        <div className="mt-5 space-y-4">
-          {claims.map((claim) => (
-            <article className="rounded-xl border border-slate-800 bg-slate-950/50 p-5" key={claim.cluster_id}>
-              <div className="flex flex-wrap gap-2 text-xs">
-                <span className="rounded-full bg-slate-800 px-2.5 py-1 text-slate-200">{sentimentCopy[claim.sentiment]}</span>
-                <span className="rounded-full bg-slate-800 px-2.5 py-1 text-slate-300">심각도 {claim.max_severity}/5</span>
-                <span className="rounded-full bg-slate-800 px-2.5 py-1 text-slate-300">독립 근거 {claim.independent_source_count}개</span>
+        <div className="mt-5 border-b border-[#d5d0c4]">
+          {claims.map((claim, claimIndex) => (
+            <article className="grid gap-5 border-t border-[#d5d0c4] py-6 lg:grid-cols-[minmax(190px,0.42fr)_1.58fr] lg:gap-10" key={claim.cluster_id}>
+              <div>
+                <p className="font-mono text-xs text-[#7c827d]">CLAIM {String(claimIndex + 1).padStart(2, "0")}</p>
+                <p className="mt-3 text-sm font-semibold text-[#26332d]">{sentimentCopy[claim.sentiment]}</p>
+                <dl className="metadata mt-2 space-y-1">
+                  <div className="flex justify-between gap-3"><dt>심각도</dt><dd>{claim.max_severity}/5</dd></div>
+                  <div className="flex justify-between gap-3"><dt>독립 근거</dt><dd>{claim.independent_source_count}개</dd></div>
+                  <div className="flex justify-between gap-3"><dt>관점</dt><dd className="text-right">{claim.aspect.replaceAll("_", " ")}</dd></div>
+                </dl>
               </div>
-              <h4 className="mt-3 font-semibold leading-7 text-white">{claim.canonical_claim}</h4>
-              <p className="mt-1 text-xs uppercase tracking-wide text-slate-500">{claim.aspect.replaceAll("_", " ")}</p>
-              <ul className="mt-4 space-y-3">
-                {claim.evidence.map((evidence, index) => {
-                  const source = sourceById.get(evidence.source_id);
-                  return (
-                    <li className="border-l-2 border-sky-400/40 pl-4" key={`${evidence.source_id}-${index}`}>
-                      <p className="text-sm leading-6 text-slate-300">“{evidence.fragment}”</p>
-                      <a
-                        className="mt-1 inline-block text-xs font-medium text-sky-300 underline-offset-4 hover:underline focus-visible:underline"
-                        href={evidence.source_url}
-                        rel="noopener noreferrer"
-                        target="_blank"
-                      >
-                        {source?.title || source?.domain || evidence.source_url} ↗
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
+              <div className="min-w-0">
+                <h4 className="text-base font-semibold leading-7 text-[#202a25]">{claim.canonical_claim}</h4>
+                <ul className="mt-4 space-y-5">
+                  {claim.evidence.map((evidence, index) => {
+                    const source = sourceById.get(evidence.source_id);
+                    return (
+                      <li className="border-l-2 border-[#9eb5aa] pl-4" key={`${evidence.source_id}-${index}`}>
+                        <blockquote className="break-words text-sm leading-6 text-[#465149]">“{evidence.fragment}”</blockquote>
+                        <a className="external-link mt-2 inline-block min-h-6 max-w-full break-words text-sm font-medium" href={evidence.source_url} rel="noopener noreferrer" target="_blank">
+                          {source?.title || source?.domain || evidence.source_url} <span aria-hidden="true">↗</span><span className="sr-only"> (새 창)</span>
+                        </a>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             </article>
           ))}
         </div>

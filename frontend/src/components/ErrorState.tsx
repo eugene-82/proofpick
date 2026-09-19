@@ -35,14 +35,16 @@ const errorCopy: Record<ApiErrorCode, { title: string; message: string }> = {
   },
 };
 
-export function ErrorState({ code }: { code: ApiErrorCode }) {
+export function ErrorState({ code, onRetry }: { code: ApiErrorCode; onRetry: () => void }) {
   const copy = errorCopy[code];
   return (
-    <section className="rounded-2xl border border-rose-400/25 bg-rose-400/5 p-6" role="alert">
-      <p className="text-sm font-semibold uppercase tracking-widest text-rose-300">분석 실패</p>
-      <h2 className="mt-2 text-xl font-bold text-white">{copy.title}</h2>
-      <p className="mt-2 leading-7 text-slate-300">{copy.message}</p>
-      <p className="mt-3 text-sm text-slate-500">입력창에서 내용을 확인한 뒤 다시 분석할 수 있습니다.</p>
+    <section className="border-y border-[#c99088] bg-[#faf1ef] px-1 py-6 sm:px-5" role="alert">
+      <p className="eyebrow !text-[#8f3d34]">Analysis unavailable</p>
+      <h2 className="mt-2 text-xl font-semibold text-[#4c2723]">{copy.title}</h2>
+      <p className="mt-2 max-w-3xl leading-7 text-[#6b4944]">{copy.message}</p>
+      <button className="mt-5 min-h-11 border border-[#8f3d34] px-4 py-2 text-sm font-semibold text-[#7b3129] hover:bg-[#f3dfdb]" onClick={onRetry} type="button">
+        입력을 확인하고 다시 시도
+      </button>
     </section>
   );
 }
