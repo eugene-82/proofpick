@@ -1,15 +1,10 @@
+import { communitySourceLabel } from "@/lib/communityCopy";
 import type { AnalysisResponse } from "@/lib/types";
+import { counterEvidenceText, type ToneMode } from "@/lib/toneMode";
 
-export function CounterEvidenceCard({ analysis }: { analysis: AnalysisResponse }) {
+export function CounterEvidenceCard({ analysis, mode }: { analysis: AnalysisResponse; mode: ToneMode }) {
   const { counter_evidence_attempted: attempted, counter_evidence_completed: completed } = analysis;
-  let message = "초기 근거가 부족해 반대 근거 추가 검색을 진행하지 않았습니다.";
-  if (attempted && !completed) {
-    message = "반대 근거 확인을 시도했지만 검색 서비스가 응답하지 않았습니다. 초기 분석 결과를 유지했습니다.";
-  } else if (completed && analysis.decision_changed) {
-    message = `추가 근거 확인 후 판단이 ${analysis.initial_decision}에서 ${analysis.decision}(으)로 변경되었습니다.`;
-  } else if (completed) {
-    message = "반대 근거도 확인했으며, 최종 판단은 유지되었습니다.";
-  }
+  const message = counterEvidenceText(analysis, mode);
 
   return (
     <section className="section-rule" aria-labelledby="counter-title">
@@ -54,6 +49,7 @@ export function CounterEvidenceCard({ analysis }: { analysis: AnalysisResponse }
             ).values(),
           ).map((source) => (
             <li className="min-w-0 border-b border-[#e4e0d7] py-3" key={source.url}>
+              {mode === "community" && <span className="source-badge mb-2 inline-flex">{communitySourceLabel(source.domain)}</span>}
               <a className="external-link block min-h-6 break-words font-medium" href={source.url} rel="noopener noreferrer" target="_blank">
                 {source.title || source.domain} <span aria-hidden="true">↗</span><span className="sr-only"> (새 창)</span>
               </a>

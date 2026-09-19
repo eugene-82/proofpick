@@ -78,6 +78,47 @@ body {
   text-decoration-color: currentColor;
 }
 
+[data-tone="community"] {
+  background: #d8d9d3;
+}
+
+[data-tone="community"] .ledger-paper {
+  background: #f5f4ee;
+  border-color: #6f7973;
+  box-shadow: 6px 6px 0 rgba(47, 61, 54, 0.18);
+}
+
+[data-tone="community"] .section-rule {
+  border-top-color: #69756e;
+  border-top-width: 2px;
+  padding-top: 1.5rem;
+}
+
+[data-tone="community"] .eyebrow {
+  color: #34483e;
+  letter-spacing: 0.09em;
+}
+
+[data-tone="community"] .external-link {
+  color: #174f70;
+  text-decoration-color: #8ca5b3;
+}
+
+[data-tone="community"] .community-thread-row {
+  border-top-color: #8d9690;
+}
+
+.source-badge {
+  border: 1px solid #6d7c74;
+  background: #f4f1e8;
+  color: #30423a;
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  padding: 0.15rem 0.4rem;
+}
+
 @media (max-width: 639px) {
   .section-rule {
     padding-top: 1.5rem;
