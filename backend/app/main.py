@@ -1,11 +1,18 @@
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
+
+from dotenv import load_dotenv
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+# Load project-local development settings without overriding injected production
+# environment variables; anchor lookup to the backend directory.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 from app.analysis_runtime import (
     AnalysisInputError,
