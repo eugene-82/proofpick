@@ -79,18 +79,17 @@ body {
 }
 
 [data-tone="community"] {
-  background: #d8d9d3;
+  background: #e7e6e0;
 }
 
 [data-tone="community"] .ledger-paper {
-  background: #f5f4ee;
-  border-color: #6f7973;
-  box-shadow: 6px 6px 0 rgba(47, 61, 54, 0.18);
+  background: #fcfcfa;
+  border-color: #aeb5b0;
+  box-shadow: none;
 }
 
 [data-tone="community"] .section-rule {
-  border-top-color: #69756e;
-  border-top-width: 2px;
+  border-top-color: #9da69f;
   padding-top: 1.5rem;
 }
 
@@ -104,8 +103,37 @@ body {
   text-decoration-color: #8ca5b3;
 }
 
-[data-tone="community"] .community-thread-row {
-  border-top-color: #8d9690;
+[data-tone="community"] .community-decision-grid > section {
+  min-width: 0;
+}
+
+[data-tone="community"] .community-details .section-rule {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.community-details > summary {
+  align-items: center;
+  border-bottom: 1px solid #9da69f;
+  border-top: 1px solid #9da69f;
+  color: #28352f;
+  cursor: pointer;
+  display: list-item;
+  font-size: 0.875rem;
+  font-weight: 750;
+  min-height: 2.75rem;
+  padding: 0.65rem 0;
+}
+
+.community-details > summary:hover {
+  color: #174f3e;
+}
+
+.community-fragment {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .source-badge {
@@ -116,9 +144,12 @@ body {
   font-weight: 750;
   letter-spacing: 0.04em;
   line-height: 1.4;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0.15rem 0.4rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
 @media (max-width: 639px) {
   .section-rule {
     padding-top: 1.5rem;

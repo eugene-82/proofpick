@@ -29,6 +29,17 @@ export function DecisionSummary({ decision, product, mode }: { decision: Purchas
   const copy = decisionCopy[decision];
   const description = decisionDescription(mode, decision);
   const productDisplayName = displayProductName(product);
+  if (mode === "community") {
+    return (
+      <section className={`border-l-4 px-4 py-4 ${copy.style}`} aria-labelledby="community-decision-title">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-xl font-black tracking-[-0.02em]" id="community-decision-title">{copy.label}</h2>
+          <span className="text-xs font-bold uppercase tracking-[0.12em]">최종 판단</span>
+        </div>
+        <p className="mt-2 text-sm leading-6 text-[#27332e]">{description}</p>
+      </section>
+    );
+  }
   return (
     <section className={`border-l-4 border-y border-r px-5 py-6 sm:px-7 sm:py-7 ${copy.style}`}>
       <p className="text-xs font-bold uppercase tracking-[0.16em]">최종 구매 판단</p>

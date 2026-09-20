@@ -4,6 +4,31 @@ import type { SourceSummary } from "@/lib/types";
 
 export function SourceList({ sources, mode }: { sources: SourceSummary[]; mode: ToneMode }) {
   const uniqueSources = Array.from(new Map(sources.map((source) => [source.url, source])).values());
+  if (mode === "community") {
+    return (
+      <details className="community-details section-rule">
+        <summary>출처 {uniqueSources.length}개 보기</summary>
+        <p className="mt-3 text-sm leading-6 text-[#657068]">{toneCopy[mode].sourceDescription}</p>
+        {uniqueSources.length === 0 ? (
+          <p className="mt-3 text-sm text-[#707870]">표시할 출처가 없습니다.</p>
+        ) : (
+          <ol className="mt-3 divide-y divide-[#c9cec9] border-y border-[#9ba59f]">
+            {uniqueSources.map((source, index) => (
+              <li className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] gap-2 py-3" key={source.url}>
+                <span className="font-mono text-xs text-[#858b85]" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                <div className="min-w-0">
+                  <span className="source-badge mb-1 inline-flex">{communitySourceLabel(source.domain)}</span>
+                  <a className="external-link block min-h-6 break-words text-sm font-medium" href={source.url} rel="noopener noreferrer" target="_blank">
+                    {source.title || source.domain} <span aria-hidden="true">↗</span><span className="sr-only"> (새 창)</span>
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </details>
+    );
+  }
   return (
     <section className="section-rule" aria-labelledby="source-title">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -22,7 +47,6 @@ export function SourceList({ sources, mode }: { sources: SourceSummary[]; mode: 
             <li className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-3 border-b border-[#e0dbd1] py-4 last:border-b-0 sm:grid-cols-[3rem_minmax(0,1fr)_minmax(150px,0.4fr)] sm:gap-5" key={source.url}>
               <span className="font-mono text-xs text-[#858b85]" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <div className="min-w-0">
-                {mode === "community" && <span className="source-badge mb-2 inline-flex">{communitySourceLabel(source.domain)}</span>}
                 <a className="external-link block min-h-6 break-words font-medium" href={source.url} rel="noopener noreferrer" target="_blank">
                   {source.title || source.domain} <span aria-hidden="true">↗</span><span className="sr-only"> (새 창)</span>
                 </a>

@@ -91,17 +91,39 @@ export default function Home() {
           {isLoading && <AnalysisLoading />}
           {errorCode && <ErrorState code={errorCode} onRetry={handleRetry} />}
           {analysis && (
-            <div aria-live="polite" className="space-y-8 focus:outline-none sm:space-y-10" ref={resultRef} tabIndex={-1}>
-              {toneMode === "community" && <CommunitySummary analysis={analysis} />}
-              <DecisionSummary decision={analysis.decision} product={analysis.product} mode={toneMode} />
-              <div className="section-rule grid gap-8 lg:grid-cols-[0.8fr_1.2fr] lg:gap-12">
-                <ConfidenceCard score={analysis.confidence} level={analysis.confidence_level} mode={toneMode} />
-                <ReasonList reasons={analysis.reasons} mode={toneMode} />
-              </div>
-              <RiskList blocking={analysis.blocking_issues} unresolved={analysis.unresolved_risks} mode={toneMode} />
-              <CounterEvidenceCard analysis={analysis} mode={toneMode} />
-              <EvidenceList claims={analysis.claims} sources={analysis.sources} mode={toneMode} />
-              <SourceList sources={analysis.sources} mode={toneMode} />
+            <div aria-live="polite" className={`focus:outline-none ${toneMode === "community" ? "community-result space-y-5" : "space-y-8 sm:space-y-10"}`} ref={resultRef} tabIndex={-1}>
+              {toneMode === "community" ? (
+                <>
+                  <CommunitySummary analysis={analysis} />
+                  <div className="community-decision-grid grid border-y border-[#87918b] md:grid-cols-[1.25fr_0.75fr]">
+                    <DecisionSummary decision={analysis.decision} product={analysis.product} mode={toneMode} />
+                    <ConfidenceCard score={analysis.confidence} level={analysis.confidence_level} mode={toneMode} />
+                  </div>
+                  <RiskList blocking={analysis.blocking_issues} unresolved={analysis.unresolved_risks} mode={toneMode} />
+                  <EvidenceList claims={analysis.claims} sources={analysis.sources} mode={toneMode} />
+                  <details className="community-details section-rule">
+                    <summary>판단 근거 {analysis.reasons.length}개 보기</summary>
+                    <div className="pt-4"><ReasonList reasons={analysis.reasons} mode={toneMode} /></div>
+                  </details>
+                  <details className="community-details section-rule">
+                    <summary>반대 근거 보기</summary>
+                    <div className="pt-1"><CounterEvidenceCard analysis={analysis} mode={toneMode} /></div>
+                  </details>
+                  <SourceList sources={analysis.sources} mode={toneMode} />
+                </>
+              ) : (
+                <>
+                  <DecisionSummary decision={analysis.decision} product={analysis.product} mode={toneMode} />
+                  <div className="section-rule grid gap-8 lg:grid-cols-[0.8fr_1.2fr] lg:gap-12">
+                    <ConfidenceCard score={analysis.confidence} level={analysis.confidence_level} mode={toneMode} />
+                    <ReasonList reasons={analysis.reasons} mode={toneMode} />
+                  </div>
+                  <RiskList blocking={analysis.blocking_issues} unresolved={analysis.unresolved_risks} mode={toneMode} />
+                  <CounterEvidenceCard analysis={analysis} mode={toneMode} />
+                  <EvidenceList claims={analysis.claims} sources={analysis.sources} mode={toneMode} />
+                  <SourceList sources={analysis.sources} mode={toneMode} />
+                </>
+              )}
               <p className="metadata border-t border-[#d5d0c4] pt-4 break-all">분석 ID {analysis.analysis_id}</p>
             </div>
           )}
