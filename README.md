@@ -273,6 +273,12 @@ npm run build
 - Submission catalog canonicalization과 responsive UI 적용
 - Backend reliability 동결, 현재 focus는 submission/demo polish
 
+## License & Third-Party Software
+
+ProofPick uses open-source libraries and external APIs under their respective licenses and terms. 자세한 목록과 확인 출처는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요. External services are subject to each provider's terms.
+
+Unless otherwise stated, the ProofPick source code is not distributed under an open-source license.
+
 ---
 
 ProofPick은 사용자를 대신해 진실을 선언하지 않습니다. **검색은 넓게, 검증은 보수적으로, 판단 근거는 투명하게** 제공하는 것을 목표로 합니다.
